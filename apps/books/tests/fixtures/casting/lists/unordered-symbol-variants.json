@@ -1,0 +1,28 @@
+{
+  "description": "Unordered bullet symbol variants that should normalize to unordered",
+  "source": "PDF extraction with various bullet symbols",
+  "lines": [
+    {"text": "• Standard bullet", "x0": 50, "y0": 100, "html": "Standard bullet"},
+    {"text": "- Dash bullet", "x0": 50, "y0": 120, "html": "Dash bullet"},
+    {"text": "* Asterisk bullet", "x0": 50, "y0": 140, "html": "Asterisk bullet"},
+    {"text": "◦ Hollow bullet", "x0": 50, "y0": 160, "html": "Hollow bullet"},
+    {"text": "→ Arrow bullet", "x0": 50, "y0": 180, "html": "Arrow bullet"}
+  ],
+  "expected": {
+    "block_count": 1,
+    "blocks": [
+      {
+        "list_type": "unordered",
+        "depth_base": 0,
+        "item_count": 5,
+        "items": [
+          {"marker_raw": "•", "marker_kind": "symbol", "symbol": "bullet", "depth": 0},
+          {"marker_raw": "-", "marker_kind": "symbol", "symbol": "dash", "depth": 0},
+          {"marker_raw": "*", "marker_kind": "symbol", "symbol": "bullet", "depth": 0},
+          {"marker_raw": "◦", "marker_kind": "symbol", "symbol": "hollow", "depth": 0},
+          {"marker_raw": "→", "marker_kind": "symbol", "symbol": "arrow", "depth": 0}
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "description": "Mixed ordered/unordered at same depth should split into separate blocks",
+  "source": "PDF with style change within same indentation level",
+  "lines": [
+    {"text": "1. First ordered item", "x0": 50, "y0": 100, "html": "First ordered item"},
+    {"text": "2. Second ordered item", "x0": 50, "y0": 120, "html": "Second ordered item"},
+    {"text": "• First bullet item", "x0": 50, "y0": 140, "html": "First bullet item"},
+    {"text": "• Second bullet item", "x0": 50, "y0": 160, "html": "Second bullet item"},
+    {"text": "3. Back to ordered", "x0": 50, "y0": 180, "html": "Back to ordered"}
+  ],
+  "expected": {
+    "block_count": 3,
+    "blocks": [
+      {
+        "list_type": "ordered",
+        "depth_base": 0,
+        "start_value": 1,
+        "item_count": 2
+      },
+      {
+        "list_type": "unordered",
+        "depth_base": 0,
+        "item_count": 2
+      },
+      {
+        "list_type": "ordered",
+        "depth_base": 0,
+        "start_value": 3,
+        "item_count": 1
+      }
+    ]
+  }
+}

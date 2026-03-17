@@ -1,0 +1,17 @@
+{
+  "expected_structure": {
+    "heading_count": {"h1": 1, "h2": 3, "h3": 5},
+    "total_blocks": 50,
+    "has_styled_content": true
+  },
+  "style_verification": {
+    "color_fields_present": ["#FF0000", "#0000FF"],
+    "font_families": ["Georgia", "Arial"],
+    "alignments": ["center", "right"]
+  },
+  "round_trip_assertions": {
+    "draft_to_reader_blocks_match": true,
+    "heading_hierarchy_preserved": true,
+    "alignment_preserved": true
+  }
+}

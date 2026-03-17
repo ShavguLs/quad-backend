@@ -1,0 +1,51 @@
+{
+  "description": "Nested indentation with x-coordinate jitter should produce stable depth",
+  "source": "PDF with minor x-position variations",
+  "lines": [
+    {"text": "1. Top level item", "x0": 50, "y0": 100, "html": "Top level item"},
+    {"text": "• Nested bullet", "x0": 74.5, "y0": 120, "html": "Nested bullet"},
+    {"text": "• Another nested", "x0": 73.8, "y0": 140, "html": "Another nested"},
+    {"text": "2. Back to top", "x0": 50.2, "y0": 160, "html": "Back to top"},
+    {"text": "a. Alpha nested", "x0": 98.1, "y0": 180, "html": "Alpha nested"},
+    {"text": "b. Another alpha", "x0": 97.5, "y0": 200, "html": "Another alpha"}
+  ],
+  "expected": {
+    "block_count": 4,
+    "blocks": [
+      {
+        "list_type": "ordered",
+        "depth_base": 0,
+        "item_count": 1,
+        "items": [
+          {"depth": 0, "marker_raw": "1"}
+        ]
+      },
+      {
+        "list_type": "unordered",
+        "depth_base": 1,
+        "item_count": 2,
+        "items": [
+          {"depth": 1, "marker_raw": "•"},
+          {"depth": 1, "marker_raw": "•"}
+        ]
+      },
+      {
+        "list_type": "ordered",
+        "depth_base": 0,
+        "item_count": 1,
+        "items": [
+          {"depth": 0, "marker_raw": "2"}
+        ]
+      },
+      {
+        "list_type": "ordered",
+        "depth_base": 2,
+        "item_count": 2,
+        "items": [
+          {"depth": 2, "marker_raw": "a", "marker_kind": "alpha-lower"},
+          {"depth": 2, "marker_raw": "b", "marker_kind": "alpha-lower"}
+        ]
+      }
+    ]
+  }
+}

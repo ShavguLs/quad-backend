@@ -1,0 +1,19 @@
+{
+  "id": "mixed-content",
+  "name": "Mixed Content Flow",
+  "description": "Paragraphs interleaved with lists preserve reading order",
+  "category": "integration",
+  "priority": "critical",
+  "scenarios": [
+    "paragraph before list",
+    "paragraph after list",
+    "multiple list blocks",
+    "nested lists between paragraphs"
+  ],
+  "expected_structure": {
+    "block_types": ["paragraph", "list", "paragraph", "list"],
+    "order_preserved": true
+  },
+  "source_pdf": "mixed-content.pdf",
+  "expected_golden": "mixed-content.yaml"
+}

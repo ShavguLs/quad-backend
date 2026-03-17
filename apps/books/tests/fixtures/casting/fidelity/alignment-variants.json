@@ -1,0 +1,50 @@
+{
+  "description": "Text alignment detection from line geometry",
+  "test_cases": [
+    {
+      "name": "Center alignment detection",
+      "line_x0": 150.0,
+      "line_x1": 350.0,
+      "page_width": 500.0,
+      "body_left_margin": 50.0,
+      "body_right_margin": 50.0,
+      "expected": "center"
+    },
+    {
+      "name": "Left alignment (default)",
+      "line_x0": 50.0,
+      "line_x1": 200.0,
+      "page_width": 500.0,
+      "body_left_margin": 50.0,
+      "body_right_margin": 50.0,
+      "expected": "left"
+    },
+    {
+      "name": "Right alignment detection",
+      "line_x0": 300.0,
+      "line_x1": 450.0,
+      "page_width": 500.0,
+      "body_left_margin": 50.0,
+      "body_right_margin": 50.0,
+      "expected": "right"
+    },
+    {
+      "name": "Near-left alignment (indented body text)",
+      "line_x0": 80.0,
+      "line_x1": 250.0,
+      "page_width": 500.0,
+      "body_left_margin": 50.0,
+      "body_right_margin": 50.0,
+      "expected": "left"
+    },
+    {
+      "name": "Center with tolerance",
+      "line_x0": 145.0,
+      "line_x1": 355.0,
+      "page_width": 500.0,
+      "body_left_margin": 50.0,
+      "body_right_margin": 50.0,
+      "expected": "center"
+    }
+  ]
+}

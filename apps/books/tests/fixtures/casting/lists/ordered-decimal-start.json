@@ -1,0 +1,25 @@
+{
+  "description": "Ordered list with non-1 start value (decimal starting at 3)",
+  "source": "PDF extraction",
+  "lines": [
+    {"text": "3. First item in continued list", "x0": 50, "y0": 100, "html": "First item in continued list"},
+    {"text": "4. Second item", "x0": 50, "y0": 120, "html": "Second item"},
+    {"text": "5. Third item", "x0": 50, "y0": 140, "html": "Third item"}
+  ],
+  "expected": {
+    "block_count": 1,
+    "blocks": [
+      {
+        "list_type": "ordered",
+        "depth_base": 0,
+        "start_value": 3,
+        "item_count": 3,
+        "items": [
+          {"marker_raw": "3", "marker_kind": "decimal", "marker_value": 3, "depth": 0},
+          {"marker_raw": "4", "marker_kind": "decimal", "marker_value": 4, "depth": 0},
+          {"marker_raw": "5", "marker_kind": "decimal", "marker_value": 5, "depth": 0}
+        ]
+      }
+    ]
+  }
+}

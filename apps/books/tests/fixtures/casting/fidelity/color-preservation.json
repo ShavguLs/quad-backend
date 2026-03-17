@@ -1,0 +1,40 @@
+{
+  "description": "Color extraction from sRGB integers to CSS hex",
+  "test_cases": [
+    {
+      "name": "Red color extraction",
+      "color_int": 16711680,
+      "expected": "#FF0000"
+    },
+    {
+      "name": "Green color extraction",
+      "color_int": 65280,
+      "expected": "#00FF00"
+    },
+    {
+      "name": "Blue color extraction",
+      "color_int": 255,
+      "expected": "#0000FF"
+    },
+    {
+      "name": "Black returns None (default)",
+      "color_int": 0,
+      "expected": null
+    },
+    {
+      "name": "White color extraction",
+      "color_int": 16777215,
+      "expected": "#FFFFFF"
+    },
+    {
+      "name": "Gray color extraction",
+      "color_int": 8947848,
+      "expected": "#888888"
+    },
+    {
+      "name": "None color returns None",
+      "color_int": null,
+      "expected": null
+    }
+  ]
+}

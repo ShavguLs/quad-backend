@@ -1,0 +1,61 @@
+{
+  "description": "Heading hierarchy detection from font size ratios",
+  "test_cases": [
+    {
+      "name": "H1 detection with 2.5x body size",
+      "body_size": 12.0,
+      "font_size": 30.0,
+      "is_bold": true,
+      "expected_level": 1
+    },
+    {
+      "name": "H2 detection with 2.0x body size",
+      "body_size": 12.0,
+      "font_size": 24.0,
+      "is_bold": false,
+      "expected_level": 2
+    },
+    {
+      "name": "H3 detection with 1.6x body size",
+      "body_size": 12.0,
+      "font_size": 20.0,
+      "is_bold": false,
+      "expected_level": 3
+    },
+    {
+      "name": "H4 detection with 1.4x body size",
+      "body_size": 12.0,
+      "font_size": 17.0,
+      "is_bold": false,
+      "expected_level": 4
+    },
+    {
+      "name": "H5 detection with 1.25x body size",
+      "body_size": 12.0,
+      "font_size": 15.0,
+      "is_bold": false,
+      "expected_level": 5
+    },
+    {
+      "name": "H6 detection with 1.1x body size",
+      "body_size": 12.0,
+      "font_size": 14.0,
+      "is_bold": false,
+      "expected_level": 6
+    },
+    {
+      "name": "Body text below threshold",
+      "body_size": 12.0,
+      "font_size": 12.5,
+      "is_bold": false,
+      "expected_level": 0
+    },
+    {
+      "name": "Bold boost promotes H3 to H2 range",
+      "body_size": 12.0,
+      "font_size": 22.5,
+      "is_bold": true,
+      "expected_level": 2
+    }
+  ]
+}

@@ -1,0 +1,177 @@
+{
+  "version": "1.0.0",
+  "description": "Master catalog for regression test fixtures documenting PDF casting fidelity validation",
+  "lastUpdated": "2026-02-08",
+  "tiers": {
+    "unit": {
+      "description": "Fast, isolated tests for individual components",
+      "timeout": 30,
+      "fixtures": []
+    },
+    "integration": {
+      "description": "Tests with database and external dependencies",
+      "timeout": 120,
+      "fixtures": []
+    },
+    "regression": {
+      "description": "Golden file tests validating PDF casting fidelity",
+      "timeout": 300,
+      "fixtures": [
+        {
+          "id": "list-simple",
+          "name": "Simple Lists",
+          "description": "Basic ordered and unordered list preservation with bullet and numbering detection",
+          "category": "list",
+          "priority": "critical",
+          "validation": {
+            "type": "golden-file",
+            "expectedPath": "apps/books/tests/fixtures/regression/expected/list-simple.yaml",
+            "fidelityChecks": [
+              {
+                "property": "list_type",
+                "description": "List type (ordered/unordered) is preserved",
+                "severity": "critical"
+              },
+              {
+                "property": "marker_kinds",
+                "description": "Bullet symbols and numbering formats preserved",
+                "severity": "critical"
+              },
+              {
+                "property": "nesting_depth",
+                "description": "List nesting levels maintained",
+                "severity": "high"
+              }
+            ]
+          }
+        },
+        {
+          "id": "heading-hierarchy",
+          "name": "Heading Hierarchy",
+          "description": "H1-H6 heading detection from font size ratios and bold styling",
+          "category": "heading",
+          "priority": "critical",
+          "validation": {
+            "type": "golden-file",
+            "expectedPath": "apps/books/tests/fixtures/regression/expected/heading-hierarchy.yaml",
+            "fidelityChecks": [
+              {
+                "property": "h1-h6_levels",
+                "description": "All heading levels detected correctly",
+                "severity": "critical"
+              },
+              {
+                "property": "size_ratios",
+                "description": "Font size ratio thresholds applied correctly",
+                "severity": "critical"
+              },
+              {
+                "property": "bold_boost",
+                "description": "Bold font weight boosts heading level appropriately",
+                "severity": "high"
+              }
+            ]
+          }
+        },
+        {
+          "id": "mixed-content",
+          "name": "Mixed Content Flow",
+          "description": "Paragraphs interleaved with lists preserve reading order and content boundaries",
+          "category": "integration",
+          "priority": "critical",
+          "validation": {
+            "type": "golden-file",
+            "expectedPath": "apps/books/tests/fixtures/regression/expected/mixed-content.yaml",
+            "fidelityChecks": [
+              {
+                "property": "reading_order",
+                "description": "Content appears in correct reading sequence",
+                "severity": "critical"
+              },
+              {
+                "property": "content_boundaries",
+                "description": "Block-level elements properly separated",
+                "severity": "critical"
+              },
+              {
+                "property": "paragraph_blocks",
+                "description": "Paragraphs preserved between list blocks",
+                "severity": "high"
+              }
+            ]
+          }
+        },
+        {
+          "id": "style-preservation",
+          "name": "Inline Style Preservation",
+          "description": "Bold, italic, underline, and color preservation in paragraph content",
+          "category": "style",
+          "priority": "high",
+          "validation": {
+            "type": "golden-file",
+            "expectedPath": "apps/books/tests/fixtures/regression/expected/style-preservation.yaml",
+            "fidelityChecks": [
+              {
+                "property": "bold_detection",
+                "description": "Bold text detected and converted to <strong> or <b>",
+                "severity": "high"
+              },
+              {
+                "property": "italic_detection",
+                "description": "Italic text detected and converted to <em> or <i>",
+                "severity": "high"
+              },
+              {
+                "property": "underline_detection",
+                "description": "Underlined text wrapped in <u> tags",
+                "severity": "medium"
+              },
+              {
+                "property": "color_extraction",
+                "description": "Text color extracted and applied as inline style",
+                "severity": "medium"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "categories": {
+    "list": {
+      "description": "List structure and marker preservation",
+      "examples": ["bullet lists", "numbered lists", "nested lists"]
+    },
+    "heading": {
+      "description": "Heading level detection from typography",
+      "examples": ["h1-h6 detection", "size-based levels", "bold boost"]
+    },
+    "style": {
+      "description": "Inline text formatting preservation",
+      "examples": ["bold", "italic", "underline", "color"]
+    },
+    "integration": {
+      "description": "Multi-element content flow preservation",
+      "examples": ["mixed content", "reading order", "block boundaries"]
+    }
+  },
+  "ciConfiguration": {
+    "failOn": ["critical", "high"],
+    "skipIf": ["source_missing", "explicit_skip"],
+    "reportFormat": "junit",
+    "artifactUpload": {
+      "enabled": true,
+      "retentionDays": 7,
+      "paths": [
+        "test-results.xml",
+        "regression-report.json",
+        "failed-fixtures.log"
+      ]
+    }
+  },
+  "metadata": {
+    "sourceDirectory": "apps/books/tests/fixtures/regression/source",
+    "expectedDirectory": "apps/books/tests/fixtures/regression/expected",
+    "metadataDirectory": "apps/books/tests/fixtures/regression/metadata"
+  }
+}

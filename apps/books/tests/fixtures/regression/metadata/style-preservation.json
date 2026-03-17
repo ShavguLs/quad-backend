@@ -1,0 +1,21 @@
+{
+  "id": "style-preservation",
+  "name": "Inline Style Preservation",
+  "description": "Bold, italic, underline, color preservation in paragraphs",
+  "category": "style",
+  "priority": "high",
+  "scenarios": [
+    "bold text detection",
+    "italic text detection",
+    "underline detection",
+    "color extraction",
+    "mixed emphasis"
+  ],
+  "expected_styles": {
+    "inline_tags": ["strong", "em", "u"],
+    "color_format": "hex",
+    "spans_normalized": true
+  },
+  "source_pdf": "style-preservation.pdf",
+  "expected_golden": "style-preservation.yaml"
+}

@@ -1,0 +1,238 @@
+{
+  "version": "1.0",
+  "description": "Heading hierarchy and alignment regression fixtures for PDF-to-HTML fidelity",
+  "test_cases": [
+    {
+      "name": "h1_centered_preservation",
+      "description": "H1 with center alignment preserved through extraction",
+      "input_blocks": [
+        {
+          "type": "heading",
+          "text": "Chapter Title",
+          "attrs": {"level": 1},
+          "formatting": {"alignment": "center"}
+        }
+      ],
+      "expected_html_contains": ["<h1", "text-align:center", "Chapter Title"]
+    },
+    {
+      "name": "h2_right_aligned_preservation",
+      "description": "H2 with right alignment preserved",
+      "input_blocks": [
+        {
+          "type": "heading",
+          "text": "Section Header",
+          "attrs": {"level": 2},
+          "formatting": {"alignment": "right"}
+        }
+      ],
+      "expected_html_contains": ["<h2", "text-align:right", "Section Header"]
+    },
+    {
+      "name": "h3_justify_alignment",
+      "description": "H3 with justify alignment",
+      "input_blocks": [
+        {
+          "type": "heading",
+          "text": "Subsection Title",
+          "attrs": {"level": 3},
+          "formatting": {"alignment": "justify"}
+        }
+      ],
+      "expected_html_contains": ["<h3", "text-align:justify", "Subsection Title"]
+    },
+    {
+      "name": "heading_hierarchy_h1_through_h6",
+      "description": "All heading levels H1-H6 render correctly",
+      "input_blocks": [
+        {"type": "heading", "text": "Level 1", "attrs": {"level": 1}},
+        {"type": "heading", "text": "Level 2", "attrs": {"level": 2}},
+        {"type": "heading", "text": "Level 3", "attrs": {"level": 3}},
+        {"type": "heading", "text": "Level 4", "attrs": {"level": 4}},
+        {"type": "heading", "text": "Level 5", "attrs": {"level": 5}},
+        {"type": "heading", "text": "Level 6", "attrs": {"level": 6}}
+      ],
+      "expected_html_contains": [
+        "<h1",
+        "<h2",
+        "<h3",
+        "<h4",
+        "<h5",
+        "<h6"
+      ]
+    },
+    {
+      "name": "color_extraction_and_rendering",
+      "description": "Color metadata extracted and rendered as inline style",
+      "input_blocks": [
+        {
+          "type": "paragraph",
+          "text": "Red text",
+          "formatting": {"color": "#FF0000"}
+        }
+      ],
+      "expected_html_contains": ["color:#FF0000", "Red text"]
+    },
+    {
+      "name": "color_and_bold_combined",
+      "description": "Both color and bold rendered together",
+      "input_blocks": [
+        {
+          "type": "paragraph",
+          "text": "Styled text",
+          "formatting": {"color": "#0000FF", "bold": true}
+        }
+      ],
+      "expected_html_contains": ["color:#0000FF", "Styled text"]
+    },
+    {
+      "name": "bold_formatting_preserved",
+      "description": "Bold formatting preserved in rendering",
+      "input_blocks": [
+        {
+          "type": "paragraph",
+          "text": "Bold text",
+          "formatting": {"bold": true}
+        }
+      ],
+      "expected_html_contains": ["Bold text"]
+    },
+    {
+      "name": "center_aligned_paragraph",
+      "description": "Center alignment on paragraph preserved",
+      "input_blocks": [
+        {
+          "type": "paragraph",
+          "text": "Centered paragraph",
+          "formatting": {"alignment": "center"}
+        }
+      ],
+      "expected_html_contains": ["text-align:center", "Centered paragraph"]
+    },
+    {
+      "name": "right_aligned_paragraph",
+      "description": "Right alignment on paragraph preserved",
+      "input_blocks": [
+        {
+          "type": "paragraph",
+          "text": "Right aligned",
+          "formatting": {"alignment": "right"}
+        }
+      ],
+      "expected_html_contains": ["text-align:right"]
+    },
+    {
+      "name": "justify_aligned_paragraph",
+      "description": "Justify alignment on paragraph preserved",
+      "input_blocks": [
+        {
+          "type": "paragraph",
+          "text": "Justified text block",
+          "formatting": {"alignment": "justify"}
+        }
+      ],
+      "expected_html_contains": ["text-align:justify"]
+    },
+    {
+      "name": "heading_with_color_and_alignment",
+      "description": "H2 with both color and center alignment",
+      "input_blocks": [
+        {
+          "type": "heading",
+          "text": "Styled Heading",
+          "attrs": {"level": 2},
+          "formatting": {"color": "#333333", "alignment": "center"}
+        }
+      ],
+      "expected_html_contains": ["<h2", "text-align:center", "color:#333333"]
+    },
+    {
+      "name": "mixed_content_preservation",
+      "description": "Mixed heading and paragraph content with various styles",
+      "input_blocks": [
+        {"type": "heading", "text": "Title", "attrs": {"level": 1}, "formatting": {"alignment": "center"}},
+        {"type": "paragraph", "text": "First paragraph", "formatting": {"alignment": "left"}},
+        {"type": "paragraph", "text": "Centered text", "formatting": {"alignment": "center"}},
+        {"type": "heading", "text": "Subtitle", "attrs": {"level": 2}}
+      ],
+      "expected_html_contains": [
+        "<h1",
+        "<h2",
+        "text-align:center",
+        "Title",
+        "Subtitle"
+      ]
+    },
+    {
+      "name": "default_alignment_no_class",
+      "description": "Left alignment produces no text-align (default)",
+      "input_blocks": [
+        {
+          "type": "paragraph",
+          "text": "Default left",
+          "formatting": {"alignment": "left"}
+        }
+      ],
+      "expected_html": "<p style=\"line-height:1.4\">Default left</p>"
+    },
+    {
+      "name": "no_alignment_no_class",
+      "description": "No alignment specified produces no text-align",
+      "input_blocks": [
+        {
+          "type": "paragraph",
+          "text": "No alignment"
+        }
+      ],
+      "expected_html": "<p style=\"line-height:1.4\">No alignment</p>"
+    },
+    {
+      "name": "heading_no_alignment_no_class",
+      "description": "Heading without alignment has no text-align",
+      "input_blocks": [
+        {
+          "type": "heading",
+          "text": "Plain Heading",
+          "attrs": {"level": 2}
+        }
+      ],
+      "expected_html_contains": ["<h2", "Plain Heading"]
+    },
+    {
+      "name": "complex_styling_hierarchy",
+      "description": "Complex document with multiple style combinations",
+      "input_blocks": [
+        {
+          "type": "heading",
+          "text": "Main Title",
+          "attrs": {"level": 1},
+          "formatting": {"color": "#000000", "alignment": "center", "bold": true}
+        },
+        {
+          "type": "paragraph",
+          "text": "Introduction paragraph with color",
+          "formatting": {"color": "#333333"}
+        },
+        {
+          "type": "heading",
+          "text": "Section Header",
+          "attrs": {"level": 2},
+          "formatting": {"alignment": "left"}
+        },
+        {
+          "type": "paragraph",
+          "text": "Body text with styling",
+          "formatting": {"alignment": "justify"}
+        }
+      ],
+      "expected_html_contains": [
+        "<h1",
+        "text-align:center",
+        "color:#000000",
+        "color:#333333",
+        "<h2",
+        "text-align:justify"
+      ]
+    }
+  ]
+}

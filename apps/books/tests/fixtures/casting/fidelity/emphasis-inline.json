@@ -1,0 +1,61 @@
+{
+  "description": "Inline emphasis detection from font flags and names",
+  "test_cases": [
+    {
+      "name": "Bold via font name",
+      "font_name": "Arial-Bold",
+      "flags": 0,
+      "char_flags": 0,
+      "expected": {"is_bold": true, "is_italic": false, "is_underline": false, "is_strikeout": false}
+    },
+    {
+      "name": "Italic via font name",
+      "font_name": "Arial-Italic",
+      "flags": 0,
+      "char_flags": 0,
+      "expected": {"is_bold": false, "is_italic": true, "is_underline": false, "is_strikeout": false}
+    },
+    {
+      "name": "Bold via flags bit 4",
+      "font_name": "Arial",
+      "flags": 16,
+      "char_flags": 0,
+      "expected": {"is_bold": true, "is_italic": false, "is_underline": false, "is_strikeout": false}
+    },
+    {
+      "name": "Italic via flags bit 1",
+      "font_name": "Arial",
+      "flags": 2,
+      "char_flags": 0,
+      "expected": {"is_bold": false, "is_italic": true, "is_underline": false, "is_strikeout": false}
+    },
+    {
+      "name": "Underline via char_flags bit 1",
+      "font_name": "Arial",
+      "flags": 0,
+      "char_flags": 2,
+      "expected": {"is_bold": false, "is_italic": false, "is_underline": true, "is_strikeout": false}
+    },
+    {
+      "name": "Strikeout via char_flags bit 0",
+      "font_name": "Arial",
+      "flags": 0,
+      "char_flags": 1,
+      "expected": {"is_bold": false, "is_italic": false, "is_underline": false, "is_strikeout": true}
+    },
+    {
+      "name": "Combined bold italic",
+      "font_name": "Arial-BoldItalic",
+      "flags": 0,
+      "char_flags": 0,
+      "expected": {"is_bold": true, "is_italic": true, "is_underline": false, "is_strikeout": false}
+    },
+    {
+      "name": "Heavy font as bold",
+      "font_name": "Arial-Heavy",
+      "flags": 0,
+      "char_flags": 0,
+      "expected": {"is_bold": true, "is_italic": false, "is_underline": false, "is_strikeout": false}
+    }
+  ]
+}

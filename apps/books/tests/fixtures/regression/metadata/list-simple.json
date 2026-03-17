@@ -1,0 +1,19 @@
+{
+  "id": "list-simple",
+  "name": "Simple Lists",
+  "description": "Basic ordered and unordered list preservation",
+  "category": "list",
+  "priority": "critical",
+  "scenarios": [
+    "bullet preservation",
+    "numbering preservation",
+    "nesting levels"
+  ],
+  "expected_styles": {
+    "list_type": ["ordered", "unordered"],
+    "marker_kinds": ["decimal", "symbol"],
+    "max_depth": 2
+  },
+  "source_pdf": "list-simple.pdf",
+  "expected_golden": "list-simple.yaml"
+}
