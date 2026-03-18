@@ -2,9 +2,10 @@ import logging
 
 from django.conf import settings
 from django.middleware.csrf import get_token
-from rest_framework import permissions, status
+from rest_framework import exceptions, permissions, status
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.response import Response
+from rest_framework.authentication import CSRFCheck
 from rest_framework.views import APIView
 from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.serializers import TokenRefreshSerializer
@@ -24,6 +25,15 @@ def _cookie_secure() -> bool:
 
 def _cookie_samesite() -> str:
     return settings.AUTH_COOKIE_SAMESITE
+
+
+def _enforce_csrf(request):
+    request._dont_enforce_csrf_checks = False
+    check = CSRFCheck(lambda req: None)
+    check.process_request(request)
+    reason = check.process_view(request, None, (), {})
+    if reason:
+        raise exceptions.PermissionDenied("CSRF check failed.")
 
 
 def _set_auth_cookies(response: Response, *, access: str, refresh: str):
@@ -68,6 +78,7 @@ class RegisterView(APIView):
     permission_classes = [permissions.AllowAny]
 
     def post(self, request):
+        _enforce_csrf(request)
         serializer = RegisterSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
@@ -86,6 +97,7 @@ class LoginView(APIView):
     permission_classes = [permissions.AllowAny]
 
     def post(self, request):
+        _enforce_csrf(request)
         serializer = LoginSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         user = serializer.validated_data["user"]
@@ -107,6 +119,7 @@ class RefreshView(APIView):
     permission_classes = [permissions.AllowAny]
 
     def post(self, request):
+        _enforce_csrf(request)
         refresh = request.data.get("refresh") or request.COOKIES.get(settings.AUTH_REFRESH_COOKIE_NAME)
         if not refresh:
             raise DRFValidationError({"detail": "Refresh token missing."})
@@ -159,6 +172,7 @@ class LogoutView(APIView):
     permission_classes = [permissions.AllowAny]
 
     def post(self, request):
+        _enforce_csrf(request)
         raw_refresh_token = request.COOKIES.get(settings.AUTH_REFRESH_COOKIE_NAME)
         if raw_refresh_token:
             try:

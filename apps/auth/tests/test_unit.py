@@ -32,6 +32,14 @@ def get_error_message(errors, key="error"):
     return str(errors)
 
 
+def attach_csrf(request):
+    request._dont_enforce_csrf_checks = False
+    csrf_token = get_token(request)
+    request.COOKIES[settings.CSRF_COOKIE_NAME] = csrf_token
+    request.META["HTTP_X_CSRFTOKEN"] = csrf_token
+    return csrf_token
+
+
 class ProtectedWriteView(APIView):
     authentication_classes = [CookieJWTAuthentication]
     permission_classes = [permissions.IsAuthenticated]
@@ -373,6 +381,7 @@ class TestRegisterView:
             "handle": "registeruser",
         }
         request = self.factory.post("/auth/register", data, format="json")
+        attach_csrf(request)
         response = self.view(request)
 
         assert response.status_code == status.HTTP_201_CREATED
@@ -397,6 +406,7 @@ class TestRegisterView:
             "handle": "testuser",
         }
         request = self.factory.post("/auth/register", data, format="json")
+        attach_csrf(request)
         response = self.view(request)
 
         assert response.status_code == status.HTTP_400_BAD_REQUEST
@@ -405,6 +415,7 @@ class TestRegisterView:
         """Test registration with missing fields returns 400."""
         data = {"email": "test@example.com"}
         request = self.factory.post("/auth/register", data, format="json")
+        attach_csrf(request)
         response = self.view(request)
 
         assert response.status_code == status.HTTP_400_BAD_REQUEST
@@ -427,6 +438,7 @@ class TestRegisterView:
             "handle": "newhandle",
         }
         request = self.factory.post("/auth/register", data, format="json")
+        attach_csrf(request)
         response = self.view(request)
 
         assert response.status_code == status.HTTP_400_BAD_REQUEST
@@ -457,6 +469,7 @@ class TestLoginView:
             "password": "SecurePass123!",
         }
         request = self.factory.post("/auth/login", data, format="json")
+        attach_csrf(request)
         response = self.view(request)
 
         assert response.status_code == status.HTTP_200_OK
@@ -472,6 +485,7 @@ class TestLoginView:
             "password": "SecurePass123!",
         }
         request = self.factory.post("/auth/login", data, format="json")
+        attach_csrf(request)
         response = self.view(request)
 
         assert response.status_code == status.HTTP_200_OK
@@ -485,6 +499,7 @@ class TestLoginView:
             "password": "WrongPassword123!",
         }
         request = self.factory.post("/auth/login", data, format="json")
+        attach_csrf(request)
         response = self.view(request)
 
         assert response.status_code == status.HTTP_401_UNAUTHORIZED
@@ -494,6 +509,7 @@ class TestLoginView:
         """Test login with missing fields returns 400."""
         data = {"email": "logintest@example.com"}
         request = self.factory.post("/auth/login", data, format="json")
+        attach_csrf(request)
         response = self.view(request)
 
         assert response.status_code == status.HTTP_400_BAD_REQUEST
@@ -508,6 +524,7 @@ class TestLoginView:
             "password": "SecurePass123!",
         }
         request = self.factory.post("/auth/login", data, format="json")
+        attach_csrf(request)
         response = self.view(request)
 
         assert response.status_code == status.HTTP_401_UNAUTHORIZED
@@ -569,6 +586,7 @@ class TestLogoutView:
         """Test authenticated user can logout."""
         from rest_framework.test import force_authenticate
         request = self.factory.post("/auth/logout")
+        attach_csrf(request)
         force_authenticate(request, user=self.user)
         response = self.view(request)
 
@@ -577,6 +595,7 @@ class TestLogoutView:
     def test_logout_unauthenticated(self):
         """Test unauthenticated request still clears cookies and succeeds."""
         request = self.factory.post("/auth/logout")
+        attach_csrf(request)
         response = self.view(request)
 
         assert response.status_code == status.HTTP_204_NO_CONTENT
@@ -585,6 +604,7 @@ class TestLogoutView:
         """Test logout surfaces server-side blacklist failures."""
         refresh_token = str(RefreshToken.for_user(self.user))
         request = self.factory.post("/auth/logout")
+        attach_csrf(request)
         request.COOKIES[settings.AUTH_REFRESH_COOKIE_NAME] = refresh_token
 
         with patch.object(RefreshToken, "blacklist", side_effect=Exception("db unavailable")):
@@ -615,6 +635,7 @@ class TestRefreshView:
     def test_refresh_with_invalid_token_returns_401_and_clears_cookies(self):
         """Test refresh with a malformed token returns 401 and clears auth cookies."""
         request = self.factory.post("/auth/refresh")
+        attach_csrf(request)
         request.COOKIES[settings.AUTH_REFRESH_COOKIE_NAME] = "not.a.valid.token"
         response = self.view(request)
 
@@ -626,6 +647,7 @@ class TestRefreshView:
     def test_refresh_with_non_jwt_string_returns_401(self):
         """Test refresh with non-JWT string is handled as an auth failure."""
         request = self.factory.post("/auth/refresh")
+        attach_csrf(request)
         request.COOKIES[settings.AUTH_REFRESH_COOKIE_NAME] = "not-a-jwt"
         response = self.view(request)
 
@@ -638,6 +660,7 @@ class TestRefreshView:
 
         refresh_token = str(RefreshToken.for_user(self.user))
         request = self.factory.post("/auth/refresh")
+        attach_csrf(request)
         request.COOKIES[settings.AUTH_REFRESH_COOKIE_NAME] = refresh_token
 
         with patch.object(TokenRefreshSerializer, "is_valid", side_effect=Exception("db unavailable")):
@@ -651,6 +674,7 @@ class TestRefreshView:
     def test_refresh_missing_token_returns_400(self):
         """Test refresh without any token returns 400."""
         request = self.factory.post("/auth/refresh")
+        attach_csrf(request)
         response = self.view(request)
 
         assert response.status_code == status.HTTP_400_BAD_REQUEST
@@ -668,9 +692,15 @@ class TestAuthIntegration(APITestCase):
             handle="integration",
         )
 
+    def _load_csrf(self):
+        csrf_response = self.client.get(reverse("auth-csrf"))
+        assert csrf_response.status_code == status.HTTP_200_OK
+        return csrf_response.data["csrfToken"]
+
     def test_register_endpoint(self):
         """Test full registration endpoint flow."""
         url = reverse("auth-register")
+        csrf_token = self._load_csrf()
         data = {
             "email": "newintegration@example.com",
             "password": "SecurePass123!",
@@ -678,7 +708,7 @@ class TestAuthIntegration(APITestCase):
             "lastName": "Integration",
             "handle": "newintegration",
         }
-        response = self.client.post(url, data, format="json")
+        response = self.client.post(url, data, format="json", HTTP_X_CSRFTOKEN=csrf_token)
 
         assert response.status_code == status.HTTP_201_CREATED
         assert User.objects.filter(email="newintegration@example.com").exists()
@@ -688,11 +718,12 @@ class TestAuthIntegration(APITestCase):
     def test_login_endpoint(self):
         """Test full login endpoint flow sets cookies."""
         url = reverse("auth-login")
+        csrf_token = self._load_csrf()
         data = {
             "email": "integration@example.com",
             "password": "SecurePass123!",
         }
-        response = self.client.post(url, data, format="json")
+        response = self.client.post(url, data, format="json", HTTP_X_CSRFTOKEN=csrf_token)
 
         assert response.status_code == status.HTTP_200_OK
         assert "user" in response.data
@@ -728,25 +759,28 @@ class TestAuthIntegration(APITestCase):
 
     def test_logout_endpoint_authenticated(self):
         """Test logout endpoint with authentication."""
+        csrf_token = self._load_csrf()
         self.client.force_authenticate(user=self.user)
         url = reverse("auth-logout")
-        response = self.client.post(url)
+        response = self.client.post(url, HTTP_X_CSRFTOKEN=csrf_token)
 
         assert response.status_code == status.HTTP_204_NO_CONTENT
 
     def test_logout_endpoint_blacklists_refresh_token(self):
         """Test logout blacklists refresh token from cookie."""
+        csrf_token = self._load_csrf()
         login_url = reverse("auth-login")
         login_data = {
             "email": "integration@example.com",
             "password": "SecurePass123!",
         }
-        login_response = self.client.post(login_url, login_data, format="json")
+        login_response = self.client.post(login_url, login_data, format="json", HTTP_X_CSRFTOKEN=csrf_token)
         refresh_token = login_response.cookies[settings.AUTH_REFRESH_COOKIE_NAME].value
 
+        csrf_token = self._load_csrf()
         self.client.cookies[settings.AUTH_REFRESH_COOKIE_NAME] = refresh_token
         logout_url = reverse("auth-logout")
-        logout_response = self.client.post(logout_url)
+        logout_response = self.client.post(logout_url, HTTP_X_CSRFTOKEN=csrf_token)
 
         assert logout_response.status_code == status.HTTP_204_NO_CONTENT
 
@@ -755,24 +789,27 @@ class TestAuthIntegration(APITestCase):
 
     def test_logout_endpoint_unauthenticated(self):
         """Test logout endpoint without authentication."""
+        csrf_token = self._load_csrf()
         url = reverse("auth-logout")
-        response = self.client.post(url)
+        response = self.client.post(url, HTTP_X_CSRFTOKEN=csrf_token)
 
         assert response.status_code == status.HTTP_204_NO_CONTENT
 
     def test_token_refresh_endpoint(self):
         """Test token refresh endpoint using refresh cookie."""
+        csrf_token = self._load_csrf()
         login_url = reverse("auth-login")
         login_data = {
             "email": "integration@example.com",
             "password": "SecurePass123!",
         }
-        login_response = self.client.post(login_url, login_data, format="json")
+        login_response = self.client.post(login_url, login_data, format="json", HTTP_X_CSRFTOKEN=csrf_token)
         refresh_token = login_response.cookies[settings.AUTH_REFRESH_COOKIE_NAME].value
 
+        csrf_token = self._load_csrf()
         refresh_url = reverse("auth-refresh")
         self.client.cookies[settings.AUTH_REFRESH_COOKIE_NAME] = refresh_token
-        refresh_response = self.client.post(refresh_url, {}, format="json")
+        refresh_response = self.client.post(refresh_url, {}, format="json", HTTP_X_CSRFTOKEN=csrf_token)
 
         assert refresh_response.status_code == status.HTTP_200_OK
         assert settings.AUTH_ACCESS_COOKIE_NAME in refresh_response.cookies
@@ -805,8 +842,7 @@ class TestCookieCsrfEnforcement:
     def test_cookie_auth_allows_post_with_csrf(self):
         access = str(RefreshToken.for_user(self.user).access_token)
         request = self.factory.post("/auth/protected-write", {}, format="json")
-        request._dont_enforce_csrf_checks = False
-        csrf_token = get_token(request)
+        csrf_token = attach_csrf(request)
         request.COOKIES[settings.AUTH_ACCESS_COOKIE_NAME] = access
         request.COOKIES[settings.CSRF_COOKIE_NAME] = csrf_token
         request.META["HTTP_X_CSRFTOKEN"] = csrf_token
