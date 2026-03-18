@@ -147,6 +147,14 @@ class MeView(APIView):
         return Response({"user": UserSerializer(request.user, context={"request": request}).data}, status=status.HTTP_200_OK)
 
 
+class CsrfTokenView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        token = get_token(request)
+        return Response({"csrfToken": token}, status=status.HTTP_200_OK)
+
+
 class LogoutView(APIView):
     permission_classes = [permissions.AllowAny]
 
