@@ -38,20 +38,25 @@ DEBUG = env.bool('DEBUG', default=True)
 ALLOWED_HOSTS = env.list('ALLOWED_HOSTS', default=['*'])
 
 
-# AWS S3 Settings (optional - only used in production with AWS credentials)
+# S3-compatible object storage settings (AWS S3, Cloudflare R2, etc.)
 AWS_ACCESS_KEY_ID = env('AWS_ACCESS_KEY_ID', default=None)
 AWS_SECRET_ACCESS_KEY = env('AWS_SECRET_ACCESS_KEY', default=None)
 AWS_STORAGE_BUCKET_NAME = env('AWS_STORAGE_BUCKET_NAME', default='enquad-book-files')
-AWS_S3_REGION_NAME = env('AWS_S3_REGION_NAME', default='us-east-1')
+AWS_S3_REGION_NAME = env('AWS_S3_REGION_NAME', default='auto')
+AWS_S3_ENDPOINT_URL = env('AWS_S3_ENDPOINT_URL', default=None)
+AWS_S3_SIGNATURE_VERSION = env('AWS_S3_SIGNATURE_VERSION', default='s3v4')
+AWS_S3_ADDRESSING_STYLE = env('AWS_S3_ADDRESSING_STYLE', default='path')
+AWS_S3_CUSTOM_DOMAIN = env('AWS_S3_CUSTOM_DOMAIN', default=None)
 AWS_S3_FILE_OVERWRITE = False
 # Note: ACLs are disabled on the bucket, using bucket policy for public access instead
 AWS_DEFAULT_ACL = None
 AWS_S3_OBJECT_PARAMETERS = {
     'CacheControl': 'max-age=86400',
 }
+AWS_QUERYSTRING_AUTH = env.bool('AWS_QUERYSTRING_AUTH', default=False)
 
-# Only set custom domain if bucket name is configured
-if AWS_STORAGE_BUCKET_NAME:
+# Backward-compatible AWS fallback only when no custom endpoint is used.
+if not AWS_S3_CUSTOM_DOMAIN and not AWS_S3_ENDPOINT_URL and AWS_STORAGE_BUCKET_NAME:
     AWS_S3_CUSTOM_DOMAIN = f'{AWS_STORAGE_BUCKET_NAME}.s3.amazonaws.com'
 
 
