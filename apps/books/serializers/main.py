@@ -1,4 +1,4 @@
-﻿"""Serializers for the books app."""
+"""Serializers for the books app."""
 
 from rest_framework import serializers
 
@@ -33,6 +33,7 @@ class BookSerializer(serializers.ModelSerializer):
     views = serializers.SerializerMethodField()
     followers = serializers.SerializerMethodField()
     revenue = serializers.SerializerMethodField()
+    purchase_count = serializers.SerializerMethodField()
 
     publish_status = serializers.CharField(read_only=True)
     publish_error = serializers.CharField(read_only=True)
@@ -48,12 +49,12 @@ class BookSerializer(serializers.ModelSerializer):
             'view_count', 'follower_count', 'revenue_total', 'total_pages',
             'created_at', 'updated_at', 'cover_image', 'cover_image_url',
             'publish_status', 'publish_error', 'extraction_status', 'extraction_error', 'is_readable',
-            'coverUrl', 'totalPages', 'views', 'followers', 'revenue'
+            'coverUrl', 'totalPages', 'views', 'followers', 'revenue', 'purchase_count'
         ]
         read_only_fields = [
             'id', 'owner', 'created_at', 'updated_at',
             'view_count', 'follower_count', 'revenue_total', 'total_pages',
-            'coverUrl', 'totalPages', 'views', 'followers', 'revenue',
+            'coverUrl', 'totalPages', 'views', 'followers', 'revenue', 'purchase_count',
             'publish_status', 'publish_error', 'extraction_status', 'extraction_error', 'is_readable'
         ]
 
@@ -79,6 +80,9 @@ class BookSerializer(serializers.ModelSerializer):
 
     def get_revenue(self, obj):
         return obj.revenue_total
+
+    def get_purchase_count(self, obj):
+        return obj.orders.filter(status='COMPLETED').count()
 
     def get_extraction_error(self, obj):
         request = self.context.get('request')
