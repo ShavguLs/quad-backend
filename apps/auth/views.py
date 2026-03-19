@@ -1,7 +1,11 @@
 import logging
+import re
+import secrets
 
 from django.conf import settings
 from django.middleware.csrf import get_token
+from google.auth.transport import requests as google_requests
+from google.oauth2 import id_token as google_id_token
 from rest_framework import exceptions, permissions, status
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.response import Response
@@ -11,6 +15,7 @@ from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.serializers import TokenRefreshSerializer
 from rest_framework_simplejwt.tokens import RefreshToken
 
+from apps.users.models import User
 from apps.users.serializers import UserSerializer
 
 from .serializers import LoginSerializer, RegisterSerializer
@@ -166,6 +171,74 @@ class CsrfTokenView(APIView):
     def get(self, request):
         token = get_token(request)
         return Response({"csrfToken": token}, status=status.HTTP_200_OK)
+
+
+def _generate_unique_handle(base: str) -> str:
+    """Derive a unique handle from a Google user's given name."""
+    slug = re.sub(r"[^a-z0-9]", "", base.lower())[:20] or "user"
+    for _ in range(10):
+        candidate = f"{slug}_{secrets.token_hex(2)}"
+        if not User.objects.filter(handle_normalized=candidate).exists():
+            return candidate
+    return f"user_{secrets.token_hex(4)}"
+
+
+class GoogleLoginView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        _enforce_csrf(request)
+
+        credential = request.data.get("credential")
+        if not credential:
+            raise DRFValidationError({"detail": "Google credential missing."})
+
+        client_id = settings.GOOGLE_CLIENT_ID
+        if not client_id:
+            raise DRFValidationError({"detail": "Google login is not configured."})
+
+        try:
+            payload = google_id_token.verify_oauth2_token(
+                credential,
+                google_requests.Request(),
+                client_id,
+            )
+        except ValueError as exc:
+            logger.warning("Google ID token verification failed: %s", exc)
+            raise exceptions.AuthenticationFailed("Invalid Google token.") from exc
+
+        google_sub = payload["sub"]
+        email = payload.get("email", "")
+        first_name = payload.get("given_name", "") or email.split("@")[0]
+        last_name = payload.get("family_name", "") or "."
+
+        try:
+            user = User.objects.get(google_id=google_sub)
+        except User.DoesNotExist:
+            try:
+                user = User.objects.get(email=email)
+                user.google_id = google_sub
+                user.save(update_fields=["google_id"])
+            except User.DoesNotExist:
+                handle = _generate_unique_handle(first_name)
+                user = User(
+                    email=email,
+                    first_name=first_name,
+                    last_name=last_name,
+                    handle=handle,
+                    google_id=google_sub,
+                )
+                user.set_unusable_password()
+                user.save()
+
+        refresh = RefreshToken.for_user(user)
+        response = Response(
+            {"user": UserSerializer(user, context={"request": request}).data},
+            status=status.HTTP_200_OK,
+        )
+        _set_auth_cookies(response, access=str(refresh.access_token), refresh=str(refresh))
+        get_token(request)
+        return response
 
 
 class LogoutView(APIView):

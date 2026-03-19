@@ -231,6 +231,8 @@ SIMPLE_JWT = {
     'AUTH_TOKEN_CLASSES': ('rest_framework_simplejwt.tokens.AccessToken',),
 }
 
+GOOGLE_CLIENT_ID = env('GOOGLE_CLIENT_ID', default='')
+
 AUTH_COOKIE_DOMAIN = env('AUTH_COOKIE_DOMAIN', default=None)
 AUTH_COOKIE_SECURE = env.bool('AUTH_COOKIE_SECURE', default=not DEBUG)
 AUTH_COOKIE_SAMESITE = env('AUTH_COOKIE_SAMESITE', default='None' if not DEBUG else 'Lax')
