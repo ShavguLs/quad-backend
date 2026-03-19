@@ -67,10 +67,10 @@ class WalletViewSet(viewsets.GenericViewSet):
         wallet = self.get_queryset().first()
         if not wallet:
             return Response({
-                'balance': '£0.00',
-                'totalMade': '£0.00',
-                'pending': '£0.00',
-                'withdrawals': '£0.00',
+                'balance': '₾0.00',
+                'totalMade': '₾0.00',
+                'pending': '₾0.00',
+                'withdrawals': '₾0.00',
             })
         
         serializer = WalletStatsSerializer(wallet)
@@ -147,6 +147,6 @@ class WalletViewSet(viewsets.GenericViewSet):
         
         return Response({
             'message': 'Deposit successful',
-            'amount': f'£{amount}',
-            'new_balance': f'£{wallet.balance}'
+            'amount': f'₾{amount}',
+            'new_balance': f'₾{wallet.balance}'
         })

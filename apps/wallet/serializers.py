@@ -19,16 +19,13 @@ class WalletSerializer(serializers.ModelSerializer):
         fields = ['balance', 'total_made', 'total_withdrawn']
     
     def get_balance(self, obj):
-        """Format balance with GBP currency symbol."""
-        return f'£{obj.balance:.2f}'
+        return f'₾{obj.balance:.2f}'
     
     def get_total_made(self, obj):
-        """Format total_made with GBP currency symbol."""
-        return f'£{obj.total_made:.2f}'
+        return f'₾{obj.total_made:.2f}'
     
     def get_total_withdrawn(self, obj):
-        """Format total_withdrawn with GBP currency symbol."""
-        return f'£{obj.total_withdrawn:.2f}'
+        return f'₾{obj.total_withdrawn:.2f}'
 
 
 class WalletStatsSerializer(serializers.ModelSerializer):
@@ -44,20 +41,16 @@ class WalletStatsSerializer(serializers.ModelSerializer):
         fields = ['balance', 'total_made', 'pending', 'total_withdrawn']
     
     def get_balance(self, obj):
-        """Format balance with GBP currency symbol."""
-        return f'£{obj.balance:.2f}'
+        return f'₾{obj.balance:.2f}'
     
     def get_total_made(self, obj):
-        """Format total_made with GBP currency symbol."""
-        return f'£{obj.total_made:.2f}'
+        return f'₾{obj.total_made:.2f}'
     
     def get_total_withdrawn(self, obj):
-        """Format total_withdrawn with GBP currency symbol."""
-        return f'£{obj.total_withdrawn:.2f}'
+        return f'₾{obj.total_withdrawn:.2f}'
     
     def get_pending(self, obj):
-        """Calculate pending transactions total."""
-        return f'£{obj.pending:.2f}'
+        return f'₾{obj.pending:.2f}'
 
 
 class TransactionSerializer(serializers.ModelSerializer):
@@ -73,6 +66,6 @@ class TransactionSerializer(serializers.ModelSerializer):
     def get_amount(self, obj):
         """Format amount with +/- prefix based on transaction type."""
         if obj.type in [Transaction.TYPE_SALE, Transaction.TYPE_DEPOSIT]:
-            return f"+£{obj.amount}"
+            return f"+₾{obj.amount}"
         else:
-            return f"-£{obj.amount}"
+            return f"-₾{obj.amount}"
