@@ -245,13 +245,9 @@ AUTH_REFRESH_COOKIE_MAX_AGE = int(SIMPLE_JWT['REFRESH_TOKEN_LIFETIME'].total_sec
 
 # CORS
 CORS_ALLOW_ALL_ORIGINS = env.bool('CORS_ALLOW_ALL_ORIGINS', default=False)
-CORS_ALLOWED_ORIGINS = [
+CORS_ALLOWED_ORIGINS = env.list('CORS_ALLOWED_ORIGINS', default=[
     "http://localhost:3000",
-    "https://quad-ebon.vercel.app",
-    "https://quad-prj9flznl-adolphshs-projects.vercel.app",
-    "https://enquad-acaf5c3fefbe.herokuapp.com",
-    "https://enquad-1bbee1f617a7.herokuapp.com",
-]
+])
 CORS_ALLOW_CREDENTIALS = True
 CSRF_TRUSTED_ORIGINS = env.list('CSRF_TRUSTED_ORIGINS', default=CORS_ALLOWED_ORIGINS)
 CSRF_COOKIE_SECURE = env.bool('CSRF_COOKIE_SECURE', default=not DEBUG)
