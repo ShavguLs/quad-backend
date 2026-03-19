@@ -28,7 +28,7 @@ conventions used across all API serializers.
 
 #### Currency
 - All monetary values stored as DecimalField (never FloatField)
-- API responses format currency with £ prefix: "£10.99"
+- API responses format currency with ₾ prefix: "₾10.99"
 - Use FormattedCurrencyField for consistent formatting
 
 #### Booleans
@@ -70,18 +70,18 @@ from rest_framework import serializers
 
 class FormattedCurrencyField(serializers.Field):
     """
-    Field that formats Decimal as £ string with 2 decimal places.
+    Field that formats Decimal as ₾ string with 2 decimal places.
     
     Usage:
         price = FormattedCurrencyField()  # Uses source field name
         price = FormattedCurrencyField(source='amount')  # Custom source
     
     Output:
-        "£10.99"  # Always with £ prefix and exactly 2 decimal places
+        "₾10.99"  # Always with ₾ prefix and exactly 2 decimal places
     """
     
     def to_representation(self, value):
-        """Format Decimal as £ string with 2 decimal places."""
+        """Format Decimal as ₾ string with 2 decimal places."""
         if value is None:
             return None
         
@@ -92,17 +92,17 @@ class FormattedCurrencyField(serializers.Field):
         # Quantize to 2 decimal places
         value = value.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
         
-        return f'£{value}'
+        return f'₾{value}'
     
     def to_internal_value(self, data):
         """Parse currency string back to Decimal."""
         if data is None:
             return None
         
-        # Strip £ prefix if present
+        # Strip ₾ prefix if present
         if isinstance(data, str):
             data = data.strip()
-            if data.startswith('£'):
+            if data.startswith('₾'):
                 data = data[1:]
             # Handle empty string after stripping
             if not data:
@@ -112,7 +112,7 @@ class FormattedCurrencyField(serializers.Field):
             return Decimal(data)
         except (ValueError, TypeError) as exc:
             raise serializers.ValidationError(
-                f"Invalid currency format: {data}. Expected format: £10.99 or 10.99"
+                f"Invalid currency format: {data}. Expected format: ₾10.99 or 10.99"
             ) from exc
 
 

@@ -58,7 +58,7 @@ class TestOrderSerializer:
 
         assert data['id'] == str(order.id)
         assert data['bookTitle'] == "Test Book"
-        assert data['price'] == "£19.99"
+        assert data['price'] == "₾19.99"
         assert data['status'] == Order.STATUS_COMPLETED
         assert data['timestamp'] == order.created_at.isoformat()
         assert 'img' in data
@@ -131,7 +131,7 @@ class TestOrderSerializer:
         data = serializer.data
 
         assert data['bookTitle'] == "No Context Book"
-        assert data['price'] == "£14.99"
+        assert data['price'] == "₾14.99"
 
     def test_serialize_order_with_mock_cover_image(self):
         """Test order serialization with cover image using mock."""
@@ -224,10 +224,10 @@ class TestOrderSerializer:
 
         assert len(data) == 2
         assert data[0]['bookTitle'] == "Book Two"  # Most recent first
-        assert data[0]['price'] == "£20.00"
+        assert data[0]['price'] == "₾20.00"
         assert data[0]['status'] == Order.STATUS_PENDING
         assert data[1]['bookTitle'] == "Book One"
-        assert data[1]['price'] == "£10.00"
+        assert data[1]['price'] == "₾10.00"
         assert data[1]['status'] == Order.STATUS_COMPLETED
 
     def test_order_serializer_fields_are_read_only(self):
@@ -269,7 +269,7 @@ class TestOrderSerializer:
         assert serializer.get_bookTitle(order) == "Special Title Book"
 
     def test_get_price_method(self):
-        """Test get_price method formats amount with £ symbol."""
+        """Test get_price method formats amount with ₾ symbol."""
         buyer = User.objects.create_user(
             email="pricebuyer@example.com",
             password="secret123",
@@ -298,7 +298,7 @@ class TestOrderSerializer:
         )
 
         serializer = OrderSerializer(order)
-        assert serializer.get_price(order) == "£123.45"
+        assert serializer.get_price(order) == "₾123.45"
 
     def test_get_timestamp_method(self):
         """Test get_timestamp method returns ISO format."""

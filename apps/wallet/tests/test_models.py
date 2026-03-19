@@ -46,7 +46,7 @@ class TestWalletModel:
         wallet.balance = Decimal("100.50")
         wallet.save()
 
-        assert str(wallet) == f"Wallet for str@example.com (balance: £{wallet.balance})"
+        assert str(wallet) == f"Wallet for str@example.com (balance: ₾{wallet.balance})"
 
     def test_wallet_pending_property_no_pending_transactions(self):
         """Test pending property returns 0 when no pending transactions."""
@@ -223,7 +223,7 @@ class TestTransactionModel:
             label="Test sale",
         )
 
-        assert str(transaction) == "SALE - £50.00 (PENDING)"
+        assert str(transaction) == "SALE - ₾50.00 (PENDING)"
 
     def test_transaction_type_choices(self):
         """Test valid transaction types."""

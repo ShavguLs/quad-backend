@@ -150,10 +150,10 @@ class MyBookSerializer(serializers.ModelSerializer):
         return None
 
     def get_price(self, obj):
-        return f'£{obj.price}'
+        return f'₾{obj.price}'
 
     def get_revenue(self, obj):
-        return f'£{obj.revenue_total}'
+        return f'₾{obj.revenue_total}'
 
     def get_views(self, obj):
         return obj.view_count

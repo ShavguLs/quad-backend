@@ -141,7 +141,7 @@ class TestOrderViewSet:
 
         assert response.status_code == status.HTTP_201_CREATED
         assert response.data['bookTitle'] == "Test Book"
-        assert response.data['price'] == "£50.00"
+        assert response.data['price'] == "₾50.00"
         assert response.data['status'] == Order.STATUS_COMPLETED
 
         # Verify wallet updates
@@ -483,7 +483,7 @@ class TestOrderViewSetEdgeCases:
         response = view(request)
 
         assert response.status_code == status.HTTP_201_CREATED
-        assert response.data['price'] == "£0.00"
+        assert response.data['price'] == "₾0.00"
 
     def test_purchase_very_expensive_book(self):
         """Test purchase of very expensive book."""
@@ -504,7 +504,7 @@ class TestOrderViewSetEdgeCases:
         response = view(request)
 
         assert response.status_code == status.HTTP_201_CREATED
-        assert response.data['price'] == "£999999.99"
+        assert response.data['price'] == "₾999999.99"
 
     def test_author_wallet_created_via_signal(self):
         """Test that author wallet is auto-created via signal.

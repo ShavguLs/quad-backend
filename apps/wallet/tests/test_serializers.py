@@ -44,9 +44,9 @@ class TestWalletSerializer:
         serializer = WalletSerializer(wallet)
         data = serializer.data
 
-        assert data["balance"] == "£150.50"
-        assert data["total_made"] == "£500.00"
-        assert data["total_withdrawn"] == "£100.00"
+        assert data["balance"] == "₾150.50"
+        assert data["total_made"] == "₾500.00"
+        assert data["total_withdrawn"] == "₾100.00"
 
     def test_serialize_wallet_zero_values(self):
         """Test wallet serialization with zero values."""
@@ -62,9 +62,9 @@ class TestWalletSerializer:
         serializer = WalletSerializer(wallet)
         data = serializer.data
 
-        assert data["balance"] == "£0.00"
-        assert data["total_made"] == "£0.00"
-        assert data["total_withdrawn"] == "£0.00"
+        assert data["balance"] == "₾0.00"
+        assert data["total_made"] == "₾0.00"
+        assert data["total_withdrawn"] == "₾0.00"
 
     def test_serialize_wallet_decimal_rounding(self):
         """Test wallet serialization rounds decimals to 2 places."""
@@ -85,9 +85,9 @@ class TestWalletSerializer:
         data = serializer.data
 
         # The serializer formats with .2f, which rounds
-        assert data["balance"] == "£100.00"
-        assert data["total_made"] == "£0.00"
-        assert data["total_withdrawn"] == "£123.46"
+        assert data["balance"] == "₾100.00"
+        assert data["total_made"] == "₾0.00"
+        assert data["total_withdrawn"] == "₾123.46"
 
     def test_wallet_serializer_fields(self):
         """Test that serializer includes expected fields."""
@@ -139,10 +139,10 @@ class TestWalletStatsSerializer:
         serializer = WalletStatsSerializer(wallet)
         data = serializer.data
 
-        assert data["balance"] == "£200.00"
-        assert data["total_made"] == "£1000.00"
-        assert data["pending"] == "£50.00"
-        assert data["total_withdrawn"] == "£300.00"
+        assert data["balance"] == "₾200.00"
+        assert data["total_made"] == "₾1000.00"
+        assert data["pending"] == "₾50.00"
+        assert data["total_withdrawn"] == "₾300.00"
 
     def test_serialize_wallet_stats_no_pending(self):
         """Test wallet stats with no pending transactions."""
@@ -162,7 +162,7 @@ class TestWalletStatsSerializer:
         serializer = WalletStatsSerializer(wallet)
         data = serializer.data
 
-        assert data["pending"] == "£0.00"
+        assert data["pending"] == "₾0.00"
 
     def test_wallet_stats_serializer_fields(self):
         """Test that stats serializer includes expected fields."""
@@ -208,7 +208,7 @@ class TestTransactionSerializer:
         serializer = TransactionSerializer(transaction)
         data = serializer.data
 
-        assert data["amount"] == "+£100.00"
+        assert data["amount"] == "+₾100.00"
         assert data["type"] == Transaction.TYPE_DEPOSIT
         assert data["status"] == Transaction.STATUS_COMPLETED
         assert data["label"] == "Manual deposit"
@@ -236,7 +236,7 @@ class TestTransactionSerializer:
         serializer = TransactionSerializer(transaction)
         data = serializer.data
 
-        assert data["amount"] == "+£25.50"
+        assert data["amount"] == "+₾25.50"
         assert data["type"] == Transaction.TYPE_SALE
 
     def test_serialize_withdraw_transaction(self):
@@ -260,7 +260,7 @@ class TestTransactionSerializer:
         serializer = TransactionSerializer(transaction)
         data = serializer.data
 
-        assert data["amount"] == "-£50.00"
+        assert data["amount"] == "-₾50.00"
         assert data["type"] == Transaction.TYPE_WITHDRAW
 
     def test_serialize_multiple_transactions(self):
@@ -302,9 +302,9 @@ class TestTransactionSerializer:
 
         assert len(data) == 3
         # Note: transactions are ordered by created_at descending
-        assert data[0]["amount"] == "-£20.00"
-        assert data[1]["amount"] == "+£30.00"
-        assert data[2]["amount"] == "+£100.00"
+        assert data[0]["amount"] == "-₾20.00"
+        assert data[1]["amount"] == "+₾30.00"
+        assert data[2]["amount"] == "+₾100.00"
 
     def test_transaction_serializer_fields(self):
         """Test that transaction serializer includes expected fields."""

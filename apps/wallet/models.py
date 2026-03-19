@@ -45,7 +45,7 @@ class Wallet(models.Model):
         ordering = ['-created_at']
     
     def __str__(self) -> str:
-        return f"Wallet for {self.user.email} (balance: £{self.balance})"
+        return f"Wallet for {self.user.email} (balance: ₾{self.balance})"
     
     @property
     def pending(self) -> Decimal:
@@ -111,4 +111,4 @@ class Transaction(models.Model):
         ordering = ['-created_at']
     
     def __str__(self) -> str:
-        return f"{self.type} - £{self.amount} ({self.status})"
+        return f"{self.type} - ₾{self.amount} ({self.status})"

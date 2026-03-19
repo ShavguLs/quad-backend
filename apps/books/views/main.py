@@ -508,7 +508,7 @@ class BookViewSet(viewsets.ModelViewSet):
             'book_id': book.pk,
             'title': book.title,
             'author': book.author,
-            'price': f'£{book.price}',
+            'price': f'₾{book.price}',
             'status': 'ready',
             'extraction_status': book.extraction_status,
             'total_pages': total_pages,

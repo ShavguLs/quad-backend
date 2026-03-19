@@ -82,11 +82,11 @@ class TestWalletViewSet:
         response = view(request)
 
         assert response.status_code == status.HTTP_200_OK
-        # Serializer already formats values as '£...' — no extra prefix added by view
-        assert response.data['balance'] == '£150.50'
-        assert response.data['totalMade'] == '£500.00'
-        assert response.data['pending'] == '£25.00'
-        assert response.data['withdrawals'] == '£100.00'
+        # Serializer already formats values as '₾...' — no extra prefix added by view
+        assert response.data['balance'] == '₾150.50'
+        assert response.data['totalMade'] == '₾500.00'
+        assert response.data['pending'] == '₾25.00'
+        assert response.data['withdrawals'] == '₾100.00'
 
     def test_stats_action_without_wallet(self):
         """Test stats action returns zeros when no wallet exists."""
@@ -97,11 +97,11 @@ class TestWalletViewSet:
         response = view(request)
 
         assert response.status_code == status.HTTP_200_OK
-        # Serializer already formats values as '£...' — no extra prefix added by view
-        assert response.data['balance'] == '£0.00'
-        assert response.data['totalMade'] == '£0.00'
-        assert response.data['pending'] == '£0.00'
-        assert response.data['withdrawals'] == '£0.00'
+        # Serializer already formats values as '₾...' — no extra prefix added by view
+        assert response.data['balance'] == '₾0.00'
+        assert response.data['totalMade'] == '₾0.00'
+        assert response.data['pending'] == '₾0.00'
+        assert response.data['withdrawals'] == '₾0.00'
 
     def test_transactions_action_with_wallet(self):
         """Test transactions action returns transaction history."""
@@ -155,8 +155,8 @@ class TestWalletViewSet:
 
         assert response.status_code == status.HTTP_200_OK
         assert response.data['message'] == 'Deposit successful'
-        assert response.data['amount'] == '£100.00'
-        assert response.data['new_balance'] == '£150.00'
+        assert response.data['amount'] == '₾100.00'
+        assert response.data['new_balance'] == '₾150.00'
 
         wallet.refresh_from_db()
         assert wallet.balance == Decimal("150.00")

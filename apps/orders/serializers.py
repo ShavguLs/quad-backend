@@ -11,7 +11,7 @@ class OrderSerializer(serializers.ModelSerializer):
 
     Returns frontend-compatible fields matching the TypeScript Order interface:
     - bookTitle: from book.title
-    - price: formatted with £ prefix
+    - price: formatted with ₾ prefix
     - img: book cover image URL (or None)
     - timestamp: ISO 8601 formatted created_at
     """
@@ -31,8 +31,8 @@ class OrderSerializer(serializers.ModelSerializer):
         return obj.book.title
 
     def get_price(self, obj):
-        """Format price with GBP currency symbol."""
-        return f'£{obj.amount}'
+        """Format price with GEL currency symbol."""
+        return f'₾{obj.amount}'
 
     def get_img(self, obj):
         """Generate absolute URL for book cover image."""
