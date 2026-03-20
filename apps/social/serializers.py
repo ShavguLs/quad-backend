@@ -190,6 +190,52 @@ class CommunityPostCommentSerializer(serializers.ModelSerializer):
             return obj.author.profile_image.url
         return None
 
+    def validate(self, attrs):
+        if self.instance is not None:
+            return attrs
+
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        if not user or not user.is_authenticated:
+            return attrs
+
+        post = getattr(self.instance, "post", None)
+        if post is None:
+            view = self.context.get("view")
+            post_pk = None
+            if view is not None:
+                post_pk = view.kwargs.get("post_pk")
+            if post_pk is None:
+                return attrs
+            post = CommunityPost.objects.filter(pk=post_pk).only("id").first()
+
+        if post is None:
+            return attrs
+
+        parent = attrs.get("parent")
+        if parent is None:
+            top_level_count = CommunityPostComment.objects.filter(
+                post=post,
+                author=user,
+                parent__isnull=True,
+            ).count()
+            if top_level_count >= 3:
+                raise serializers.ValidationError("You can add at most 3 comments on one post.")
+            return attrs
+
+        if parent.post_id != post.id:
+            raise serializers.ValidationError("Reply must belong to the same post.")
+
+        reply_count = CommunityPostComment.objects.filter(
+            post=post,
+            author=user,
+            parent=parent,
+        ).count()
+        if reply_count >= 10:
+            raise serializers.ValidationError("You can add at most 10 replies to one comment.")
+
+        return attrs
+
 class CommunityPostSerializer(serializers.ModelSerializer):
     author = serializers.SerializerMethodField()
     handle = serializers.CharField(source="author.handle", read_only=True)
