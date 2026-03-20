@@ -1,7 +1,10 @@
-from django.urls import reverse
+from datetime import timedelta
+from unittest.mock import patch
+
+from django.contrib.auth import get_user_model
 from rest_framework import status
 from rest_framework.test import APITestCase
-from django.contrib.auth import get_user_model
+
 from .models import CommunityPost, SavedCommunityPost, CommunityPostLike
 
 User = get_user_model()
@@ -164,3 +167,86 @@ class CommunitySystemTests(APITestCase):
         post_data2 = results2[0]
         self.assertFalse(post_data2['is_saved'])
         self.assertTrue(post_data2['is_liked'])
+
+    def test_user_can_create_up_to_three_posts_per_day(self):
+        CommunityPost.objects.filter(pk=self.post1.pk).delete()
+        url = '/community/posts/'
+
+        for index in range(3):
+            response = self.client.post(
+                url,
+                {
+                    "content": f"Allowed post {index + 1}",
+                    "category": "discussion",
+                },
+            )
+            self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+        self.assertEqual(CommunityPost.objects.filter(author=self.user1).count(), 3)
+
+    def test_fourth_post_same_day_is_rejected(self):
+        url = '/community/posts/'
+
+        CommunityPost.objects.create(author=self.user1, content='Second post today', category='discussion')
+        CommunityPost.objects.create(author=self.user1, content='Third post today', category='discussion')
+
+        response = self.client.post(
+            url,
+            {
+                "content": "Fourth post should fail",
+                "category": "discussion",
+            },
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(
+            response.data['non_field_errors'][0],
+            'You can add at most 3 community posts per day.',
+        )
+
+    def test_other_user_is_not_blocked_by_daily_limit(self):
+        url = '/community/posts/'
+
+        CommunityPost.objects.create(author=self.user1, content='Second post today', category='discussion')
+        CommunityPost.objects.create(author=self.user1, content='Third post today', category='discussion')
+
+        self.client.force_authenticate(user=self.user2)
+        response = self.client.post(
+            url,
+            {
+                "content": "User 2 can still post",
+                "category": "discussion",
+            },
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_user_can_post_again_on_next_day(self):
+        url = '/community/posts/'
+
+        CommunityPost.objects.create(author=self.user1, content='Second post today', category='discussion')
+        CommunityPost.objects.create(author=self.user1, content='Third post today', category='discussion')
+
+        with patch('apps.social.serializers.timezone.localdate', return_value=self.post1.created_at.date() + timedelta(days=1)):
+            response = self.client.post(
+                url,
+                {
+                    "content": "Next day post is allowed",
+                    "category": "discussion",
+                },
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_unauthenticated_user_still_cannot_create_post(self):
+        self.client.force_authenticate(user=None)
+
+        response = self.client.post(
+            '/community/posts/',
+            {
+                "content": "Anonymous post attempt",
+                "category": "discussion",
+            },
+        )
+
+        self.assertIn(response.status_code, {status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN})

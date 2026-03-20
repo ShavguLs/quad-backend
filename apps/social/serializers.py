@@ -273,6 +273,25 @@ class CommunityPostSerializer(serializers.ModelSerializer):
     def get_author(self, obj):
         return _display_name(obj.author)
 
+    def validate(self, attrs):
+        if self.instance is not None:
+            return attrs
+
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        if not user or not user.is_authenticated:
+            return attrs
+
+        today = timezone.localdate()
+        posts_today = CommunityPost.objects.filter(
+            author=user,
+            created_at__date=today,
+        ).count()
+        if posts_today >= 3:
+            raise serializers.ValidationError("You can add at most 3 community posts per day.")
+
+        return attrs
+
     def get_avatar(self, obj):
         if obj.author.profile_image:
             request = self.context.get('request')
