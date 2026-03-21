@@ -196,6 +196,7 @@ USE_TZ = True
 
 STATIC_URL = 'static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
+SITE_BASE_URL = env('SITE_BASE_URL', default='https://quaduni.com')
 
 # Media files (user uploads)
 MEDIA_URL = 'media/'
