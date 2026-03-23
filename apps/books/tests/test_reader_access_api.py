@@ -4,7 +4,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase
 from rest_framework.test import APIClient
 
-from apps.books.models import Book, BookContent, BookFile
+from apps.books.models import Book, BookContent, BookFile, ReadingPosition
 from apps.orders.models import Order
 from apps.users.models import User
 
@@ -136,6 +136,35 @@ class ReaderAccessApiTests(TestCase):
         blocked = self.client.get(f'/books/{self.book.id}/read/pages/4/')
         self.assertEqual(blocked.status_code, 403)
         self.assertEqual(blocked.data['code'], 'purchase_required')
+
+    def test_reading_position_returns_null_payload_when_missing(self):
+        self.client.force_authenticate(self.owner)
+
+        response = self.client.get(f'/books/{self.book.id}/reading-position/')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, {'page_number': None})
+
+    def test_reading_position_returns_saved_position_when_present(self):
+        ReadingPosition.objects.create(
+            book=self.book,
+            user=self.owner,
+            page_number=3,
+        )
+        self.client.force_authenticate(self.owner)
+
+        response = self.client.get(f'/books/{self.book.id}/reading-position/')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['page_number'], 3)
+        self.assertIn('updated_at', response.data)
+
+    def test_reading_position_returns_404_for_missing_book(self):
+        self.client.force_authenticate(self.owner)
+
+        response = self.client.get('/books/999999/reading-position/')
+
+        self.assertEqual(response.status_code, 404)
 
     def test_manifest_uses_tallest_page_frame_dimensions(self):
         BookContent.objects.filter(book=self.book, page_number=1).update(

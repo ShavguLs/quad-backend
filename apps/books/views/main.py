@@ -1021,12 +1021,12 @@ class ReadingPositionViewSet(viewsets.ViewSet):
     permission_classes = [IsAuthenticated]
 
     def retrieve(self, request, book_id=None):
-        """GET /books/<book_id>/reading-position/ — return current position or 404."""
+        """GET /books/<book_id>/reading-position/ — return current position or null."""
         book = get_object_or_404(Book, pk=book_id)
         try:
             pos = ReadingPosition.objects.get(user=request.user, book=book)
         except ReadingPosition.DoesNotExist:
-            return Response({'detail': 'No reading position set.'}, status=status.HTTP_404_NOT_FOUND)
+            return Response({'page_number': None}, status=status.HTTP_200_OK)
         return Response(ReadingPositionSerializer(pos).data)
 
     def update(self, request, book_id=None):
