@@ -24,11 +24,11 @@ def sitemap_xml(request: HttpRequest) -> HttpResponse:
     public_books = Book._default_manager.filter(
         status='published',
         is_visible=True,
-    ).only('id', 'updated_at').order_by('id')
+    ).only('id', 'slug', 'title', 'author', 'updated_at').order_by('id')
 
     entries = [_url_entry(_absolute_url(route)) for route in SITEMAP_STATIC_ROUTES]
     entries.extend(
-        _url_entry(_absolute_url(f'/book/{book.id}'), book.updated_at.isoformat())
+        _url_entry(_absolute_url(f'/book/{book.public_path_segment}'), book.updated_at.isoformat())
         for book in public_books
     )
 

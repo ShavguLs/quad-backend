@@ -25,6 +25,7 @@ class BookSerializer(serializers.ModelSerializer):
     """Serializer for Book model."""
 
     owner = serializers.ReadOnlyField(source='owner.email')
+    url_slug = serializers.CharField(source='slug', read_only=True)
     cover_image_url = serializers.SerializerMethodField()
     cover_image = serializers.ImageField(write_only=True, required=False, allow_null=True)
 
@@ -44,7 +45,7 @@ class BookSerializer(serializers.ModelSerializer):
     class Meta:
         model = Book
         fields = [
-            'id', 'owner', 'title', 'author', 'description', 'status',
+            'id', 'owner', 'title', 'author', 'url_slug', 'description', 'status',
             'price', 'category', 'is_featured',
             'view_count', 'follower_count', 'revenue_total', 'total_pages',
             'created_at', 'updated_at', 'cover_image', 'cover_image_url',

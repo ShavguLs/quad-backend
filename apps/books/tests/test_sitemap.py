@@ -19,8 +19,8 @@ class SitemapXmlTests(TestCase):
 
     def test_sitemap_includes_public_routes_and_visible_books_only(self):
         public_book = Book.objects.create(
-            title='Public Book',
-            author='Owner User',
+            title='ვეფხისტყაოსანი',
+            author='შოთა რუსთაველი',
             owner=self.owner,
             status='published',
             is_visible=True,
@@ -57,7 +57,10 @@ class SitemapXmlTests(TestCase):
         self.assertIn('https://quaduni.com/books', content)
         self.assertIn('https://quaduni.com/community', content)
         self.assertIn('https://quaduni.com/reviews', content)
-        self.assertIn(f'https://quaduni.com/book/{public_book.id}', content)
+        self.assertIn(
+            f'https://quaduni.com/book/{public_book.public_path_segment}',
+            content,
+        )
 
         self.assertNotIn('/reader/', content)
         self.assertNotIn('/wallet/', content)
@@ -68,3 +71,17 @@ class SitemapXmlTests(TestCase):
         self.assertNotIn('/library/', content)
         self.assertNotIn('Draft Book', content)
         self.assertNotIn('Hidden Book', content)
+
+    def test_book_slug_preserves_georgian_text_for_public_urls(self):
+        book = Book.objects.create(
+            title='ვეფხისტყაოსანი',
+            author='შოთა რუსთაველი',
+            owner=self.owner,
+            status='published',
+            is_visible=True,
+            price='10.00',
+            category='BOOKS',
+        )
+
+        self.assertEqual(book.slug, 'შოთა-რუსთაველი-ვეფხისტყაოსანი')
+        self.assertEqual(book.public_path_segment, f'{book.slug}--{book.id}')

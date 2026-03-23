@@ -7,6 +7,8 @@ This module provides all book-related models including:
 - Block types: Type definitions for structured content blocks
 """
 
+import re
+import unicodedata
 import uuid
 from typing import Optional
 
@@ -35,6 +37,30 @@ from apps.books.models.content_blocks import (
     PageBreakBlock,
     block_from_extraction,
 )
+
+
+BOOK_SLUG_ALLOWED_PATTERN = re.compile(r'[^a-z0-9\u10d0-\u10ff-]+')
+BOOK_SLUG_SEPARATOR_PATTERN = re.compile(r'[\s\-_+/|]+')
+BOOK_SLUG_DASH_PATTERN = re.compile(r'-{2,}')
+
+
+def build_book_slug(author: str, title: str, max_length: int = 255) -> str:
+    parts = [part.strip() for part in (author, title) if part and part.strip()]
+    raw_value = ' '.join(parts)
+
+    if not raw_value:
+        return 'book'
+
+    normalized_value = unicodedata.normalize('NFKC', raw_value).lower()
+    slug = BOOK_SLUG_SEPARATOR_PATTERN.sub('-', normalized_value)
+    slug = BOOK_SLUG_ALLOWED_PATTERN.sub('', slug)
+    slug = BOOK_SLUG_DASH_PATTERN.sub('-', slug).strip('-')
+    
+    # Cap to max_length and strip trailing dashes
+    if len(slug) > max_length:
+        slug = slug[:max_length].rstrip('-')
+    
+    return slug or 'book'
 
 
 class Book(BookThemeMixin, models.Model):
@@ -66,6 +92,7 @@ class Book(BookThemeMixin, models.Model):
     )
     title = models.CharField(max_length=255)
     author = models.CharField(max_length=255)
+    slug = models.CharField(max_length=255, blank=True, default='')
     description = models.TextField(blank=True)
     status = models.CharField(
         max_length=20,
@@ -176,8 +203,15 @@ class Book(BookThemeMixin, models.Model):
     def __str__(self) -> str:
         return self.title
 
+    @property
+    def public_path_segment(self) -> str:
+        slug = self.slug or build_book_slug(self.author, self.title)
+        return f'{slug}--{self.pk}' if self.pk else slug
+
     def save(self, *args, **kwargs):
         """Override save to delete old cover image when a new one is uploaded."""
+        self.slug = build_book_slug(self.author, self.title)
+
         if self.pk:
             # Check if this is an update and cover_image changed
             try:
