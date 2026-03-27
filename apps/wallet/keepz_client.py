@@ -1,4 +1,5 @@
 import base64
+import binascii
 import json
 import os
 from dataclasses import dataclass
@@ -67,17 +68,18 @@ class KeepzClient:
         )
         self.timeout = timeout
 
-    def encrypt_payload(self, payload: dict[str, Any]) -> dict[str, str]:
+    def encrypt_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
         self._validate_keys()
         aes_key = os.urandom(32)
         iv = os.urandom(16)
         encrypted_data = self._aes_encrypt(_json_dumps(payload), aes_key, iv)
-        encrypted_key = self._rsa_encrypt(aes_key)
+        encrypted_keys_plaintext = self._serialize_encrypted_keys(aes_key, iv)
+        encrypted_key = self._rsa_encrypt(encrypted_keys_plaintext)
         return {
             'identifier': self.config.identifier,
             'encryptedData': base64.b64encode(encrypted_data).decode('ascii'),
             'encryptedKeys': base64.b64encode(encrypted_key).decode('ascii'),
-            'aes': base64.b64encode(iv).decode('ascii'),
+            'aes': True,
         }
 
     def decrypt_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -89,13 +91,14 @@ class KeepzClient:
             )
 
         try:
-            encrypted_data = base64.b64decode(payload['encryptedData'])
-            encrypted_key = base64.b64decode(payload['encryptedKeys'])
-            iv = base64.b64decode(payload['aes'])
+            encrypted_data = base64.b64decode(payload['encryptedData'], validate=True)
+            encrypted_key = base64.b64decode(payload['encryptedKeys'], validate=True)
         except KeyError as exc:
             raise KeepzError(f'Missing Keepz field: {exc.args[0]}') from exc
+        except (binascii.Error, ValueError) as exc:
+            raise KeepzError('Invalid Keepz encrypted payload encoding.') from exc
 
-        aes_key = self._rsa_decrypt(encrypted_key)
+        aes_key, iv = self._deserialize_encrypted_keys(self._rsa_decrypt(encrypted_key))
         decrypted = self._aes_decrypt(encrypted_data, aes_key, iv)
         return json.loads(decrypted.decode('utf-8'))
 
@@ -175,6 +178,34 @@ class KeepzClient:
         decryptor = cipher.decryptor()
         padded = decryptor.update(ciphertext) + decryptor.finalize()
         return _pkcs7_unpad(padded)
+
+    @staticmethod
+    def _serialize_encrypted_keys(aes_key: bytes, iv: bytes) -> bytes:
+        encoded_key = base64.b64encode(aes_key).decode('ascii')
+        encoded_iv = base64.b64encode(iv).decode('ascii')
+        return f'{encoded_key}.{encoded_iv}'.encode('utf-8')
+
+    @staticmethod
+    def _deserialize_encrypted_keys(value: bytes) -> tuple[bytes, bytes]:
+        try:
+            decoded_value = value.decode('utf-8')
+        except UnicodeDecodeError as exc:
+            raise KeepzError('Invalid Keepz encryptedKeys encoding.') from exc
+
+        if decoded_value.count('.') != 1:
+            raise KeepzError('Invalid Keepz encryptedKeys format.')
+
+        encoded_key, encoded_iv = decoded_value.split('.')
+        try:
+            aes_key = base64.b64decode(encoded_key, validate=True)
+            iv = base64.b64decode(encoded_iv, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise KeepzError('Invalid Keepz encryptedKeys encoding.') from exc
+
+        if len(aes_key) != 32 or len(iv) != 16:
+            raise KeepzError('Invalid Keepz encryptedKeys size.')
+
+        return aes_key, iv
 
     @staticmethod
     def _is_plain_error(payload: Any) -> bool:
