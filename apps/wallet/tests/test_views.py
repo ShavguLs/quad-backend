@@ -194,6 +194,32 @@ class TestWalletViewSet:
         assert response.status_code == status.HTTP_200_OK
         assert Wallet.objects.filter(user=self.user).exists()
 
+    def test_deposit_action_missing_checkout_url_returns_gateway_error(self):
+        wallet = Wallet.objects.get(user=self.user)
+
+        with patch('apps.wallet.views.KeepzClient') as mock_client_cls, patch('apps.wallet.views.logger') as mock_logger:
+            mock_client = Mock()
+            mock_client.create_order.return_value = {
+                'integratorOrderId': 'provider-order-1',
+                'status': 'INITIAL',
+            }
+            mock_client_cls.return_value = mock_client
+
+            view = WalletViewSet.as_view({'post': 'deposit'})
+            request = self.factory.post('/wallet/deposit', {'amount': '100.00'})
+            force_authenticate(request, user=self.user)
+
+            response = view(request)
+
+        assert response.status_code == status.HTTP_502_BAD_GATEWAY
+        assert 'გადახდის ბმული' in response.data['error']
+        transaction = wallet.transactions.get(type=Transaction.TYPE_DEPOSIT)
+        assert transaction.status == Transaction.STATUS_FAILED
+        assert transaction.provider_status == 'FAILED'
+        assert transaction.provider_payload['create_order']['integratorOrderId'] == 'provider-order-1'
+        assert transaction.provider_payload['create_order_error']['message'] == 'Keepz did not return a checkout URL.'
+        mock_logger.error.assert_called_once()
+
     def test_deposit_action_missing_amount(self):
         """Test deposit fails when amount is missing."""
         Wallet.objects.get(user=self.user)

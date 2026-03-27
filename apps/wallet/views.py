@@ -103,6 +103,16 @@ def _extract_order_id(payload: dict) -> str | None:
     return None
 
 
+def _extract_checkout_url(payload: dict) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    for key in ('urlForQR', 'checkoutUrl', 'paymentUrl', 'redirectUrl', 'url'):
+        value = payload.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
 def _credit_wallet_if_needed(transaction_id: int, provider_status: str, payload: dict | None = None) -> Transaction:
     with db_transaction.atomic():
         transaction_obj = Transaction.objects.select_for_update().select_related('wallet').get(pk=transaction_id)
@@ -249,9 +259,27 @@ class WalletViewSet(viewsets.GenericViewSet):
             message, status_code = _handle_keepz_error(exc, integrator_order_id)
             return Response({'error': message}, status=status_code)
 
-        checkout_url = keepz_response.get('urlForQR') or keepz_response.get('checkoutUrl')
+        checkout_url = _extract_checkout_url(keepz_response)
         transaction_obj.provider_payload = _merge_provider_payload(transaction_obj, 'create_order', keepz_response)
         transaction_obj.provider_status = _extract_keepz_status(keepz_response)
+
+        if not checkout_url:
+            logger.error(
+                'Keepz create_order returned no checkout URL for order %s. Response=%s',
+                integrator_order_id,
+                keepz_response,
+            )
+            transaction_obj.provider_status = 'FAILED'
+            transaction_obj.status = Transaction.STATUS_FAILED
+            transaction_obj.provider_payload = _merge_provider_payload(transaction_obj, 'create_order_error', {
+                'message': 'Keepz did not return a checkout URL.',
+            })
+            transaction_obj.save(update_fields=['provider_payload', 'provider_status', 'status'])
+            return Response(
+                {'error': 'გადახდის ბმული ამ ეტაპზე ვერ შეიქმნა. სცადეთ მოგვიანებით.'},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
         transaction_obj.save(update_fields=['provider_payload', 'provider_status'])
 
         return Response({
