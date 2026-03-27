@@ -197,6 +197,7 @@ USE_TZ = True
 STATIC_URL = 'static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 SITE_BASE_URL = env('SITE_BASE_URL', default='https://quaduni.com')
+API_BASE_URL = env('API_BASE_URL', default=SITE_BASE_URL)
 KEEPZ_ECOMMERCE_BASE_URL = env(
     'KEEPZ_ECOMMERCE_BASE_URL',
     default='https://gateway.dev.keepz.me/ecommerce-service',

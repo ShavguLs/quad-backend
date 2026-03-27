@@ -145,10 +145,10 @@ class KeepzClient:
             raise KeepzError(f'Missing Keepz configuration: {", ".join(missing)}')
 
     def _load_public_key(self):
-        return serialization.load_pem_public_key(self.config.provider_public_key.encode('utf-8'))
+        return serialization.load_pem_public_key(self._normalize_pem(self.config.provider_public_key))
 
     def _load_private_key(self):
-        return serialization.load_pem_private_key(self.config.integrator_private_key.encode('utf-8'), password=None)
+        return serialization.load_pem_private_key(self._normalize_pem(self.config.integrator_private_key), password=None)
 
     def _build_rsa_padding(self):
         if self.config.rsa_padding_mode.upper() == 'PKCS1V15':
@@ -179,3 +179,7 @@ class KeepzClient:
     @staticmethod
     def _is_plain_error(payload: Any) -> bool:
         return isinstance(payload, dict) and ('message' in payload or 'statusCode' in payload)
+
+    @staticmethod
+    def _normalize_pem(value: str) -> bytes:
+        return value.replace('\\n', '\n').encode('utf-8')

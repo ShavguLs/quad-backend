@@ -50,6 +50,10 @@ def _build_absolute_url(path: str) -> str:
     return f"{settings.SITE_BASE_URL.rstrip('/')}/{path.lstrip('/')}"
 
 
+def _build_api_absolute_url(path: str) -> str:
+    return f"{settings.API_BASE_URL.rstrip('/')}/{path.lstrip('/')}"
+
+
 def _merge_provider_payload(transaction_obj: Transaction, key: str, payload: dict) -> dict:
     provider_payload = transaction_obj.provider_payload or {}
     provider_payload[key] = payload
@@ -228,7 +232,7 @@ class WalletViewSet(viewsets.GenericViewSet):
             'integratorOrderId': integrator_order_id,
             'successRedirectUri': _build_absolute_url(f'/wallet?deposit=success&order={integrator_order_id}'),
             'failRedirectUri': _build_absolute_url(f'/wallet?deposit=failed&order={integrator_order_id}'),
-            'callbackUri': _build_absolute_url('/wallet/deposit/callback/'),
+            'callbackUri': _build_api_absolute_url('/wallet/deposit/callback/'),
         }
 
         try:
