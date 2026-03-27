@@ -4,12 +4,13 @@ Unit tests for wallet views.
 
 import pytest
 from decimal import Decimal
+from unittest.mock import Mock, patch
 
-from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APIClient, APIRequestFactory, APITestCase, force_authenticate
 
 from apps.users.models import User
+from apps.wallet.keepz_client import KeepzError
 from apps.wallet.models import Transaction, Wallet
 from apps.wallet.views import WalletViewSet
 
@@ -142,33 +143,53 @@ class TestWalletViewSet:
         assert response.data == []
 
     def test_deposit_action_success(self):
-        """Test successful deposit creates transaction and updates balance."""
+        """Test successful deposit creates pending transaction and checkout URL."""
         wallet = Wallet.objects.get(user=self.user)
         wallet.balance = Decimal("50.00")
         wallet.save()
 
-        view = WalletViewSet.as_view({'post': 'deposit'})
-        request = self.factory.post('/wallet/deposit', {'amount': '100.00'})
-        force_authenticate(request, user=self.user)
+        with patch('apps.wallet.views.KeepzClient') as mock_client_cls:
+            mock_client = Mock()
+            mock_client.create_order.return_value = {
+                'urlForQR': 'https://keepz.test/checkout/abc',
+                'status': 'INITIAL',
+            }
+            mock_client_cls.return_value = mock_client
 
-        response = view(request)
+            view = WalletViewSet.as_view({'post': 'deposit'})
+            request = self.factory.post('/wallet/deposit', {'amount': '100.00'})
+            force_authenticate(request, user=self.user)
+
+            response = view(request)
 
         assert response.status_code == status.HTTP_200_OK
-        assert response.data['message'] == 'Deposit successful'
-        assert response.data['amount'] == '₾100.00'
-        assert response.data['new_balance'] == '₾150.00'
+        assert response.data['message'] == 'Deposit initiated'
+        assert response.data['checkoutUrl'] == 'https://keepz.test/checkout/abc'
+        assert response.data['orderId']
+        assert response.data['status'] == Transaction.STATUS_PENDING
 
         wallet.refresh_from_db()
-        assert wallet.balance == Decimal("150.00")
-        assert wallet.transactions.filter(type=Transaction.TYPE_DEPOSIT).count() == 1
+        assert wallet.balance == Decimal("50.00")
+        transaction = wallet.transactions.get(type=Transaction.TYPE_DEPOSIT)
+        assert transaction.status == Transaction.STATUS_PENDING
+        assert transaction.provider == Transaction.PROVIDER_KEEPZ
+        assert transaction.provider_order_id == response.data['orderId']
 
     def test_deposit_action_without_wallet(self):
         """Test deposit creates wallet if it doesn't exist."""
-        view = WalletViewSet.as_view({'post': 'deposit'})
-        request = self.factory.post('/wallet/deposit', {'amount': '50.00'})
-        force_authenticate(request, user=self.user)
+        with patch('apps.wallet.views.KeepzClient') as mock_client_cls:
+            mock_client = Mock()
+            mock_client.create_order.return_value = {
+                'urlForQR': 'https://keepz.test/checkout/abc',
+                'status': 'INITIAL',
+            }
+            mock_client_cls.return_value = mock_client
 
-        response = view(request)
+            view = WalletViewSet.as_view({'post': 'deposit'})
+            request = self.factory.post('/wallet/deposit', {'amount': '50.00'})
+            force_authenticate(request, user=self.user)
+
+            response = view(request)
 
         assert response.status_code == status.HTTP_200_OK
         assert Wallet.objects.filter(user=self.user).exists()
@@ -227,17 +248,136 @@ class TestWalletViewSet:
 
     def test_deposit_action_float_amount(self):
         """Test deposit works with float amount."""
-        wallet = Wallet.objects.get(user=self.user)
+        with patch('apps.wallet.views.KeepzClient') as mock_client_cls:
+            mock_client = Mock()
+            mock_client.create_order.return_value = {
+                'urlForQR': 'https://keepz.test/checkout/float',
+                'status': 'INITIAL',
+            }
+            mock_client_cls.return_value = mock_client
 
-        view = WalletViewSet.as_view({'post': 'deposit'})
-        request = self.factory.post('/wallet/deposit', {'amount': 75.50})
-        force_authenticate(request, user=self.user)
+            wallet = Wallet.objects.get(user=self.user)
+            view = WalletViewSet.as_view({'post': 'deposit'})
+            request = self.factory.post('/wallet/deposit', {'amount': 75.50})
+            force_authenticate(request, user=self.user)
 
-        response = view(request)
+            response = view(request)
 
         assert response.status_code == status.HTTP_200_OK
         wallet.refresh_from_db()
-        assert wallet.balance == Decimal("75.50")
+        assert wallet.balance == Decimal("0.00")
+        assert wallet.transactions.get().amount == Decimal("75.50")
+
+    def test_deposit_action_permission_error_returns_safe_message(self):
+        with patch('apps.wallet.views.KeepzClient') as mock_client_cls:
+            mock_client = Mock()
+            mock_client.create_order.side_effect = KeepzError(
+                'Dynamic redirect permission missing',
+                status_code='6036',
+                exception_group='PERMISSION',
+            )
+            mock_client_cls.return_value = mock_client
+
+            view = WalletViewSet.as_view({'post': 'deposit'})
+            request = self.factory.post('/wallet/deposit', {'amount': '40.00'})
+            force_authenticate(request, user=self.user)
+
+            response = view(request)
+
+        assert response.status_code == status.HTTP_502_BAD_GATEWAY
+        assert 'გააქტიურებული' in response.data['error']
+        transaction = Wallet.objects.get(user=self.user).transactions.get()
+        assert transaction.status == Transaction.STATUS_FAILED
+
+    def test_callback_success_credits_wallet_exactly_once(self):
+        client = APIClient()
+        wallet = Wallet.objects.get(user=self.user)
+        transaction = Transaction.objects.create(
+            wallet=wallet,
+            type=Transaction.TYPE_DEPOSIT,
+            amount=Decimal('30.00'),
+            status=Transaction.STATUS_PENDING,
+            label='Keepz deposit',
+            provider=Transaction.PROVIDER_KEEPZ,
+            provider_order_id='order-1',
+            provider_status='INITIAL',
+            provider_payload={},
+        )
+
+        response = client.post('/wallet/deposit/callback/', {
+            'integratorOrderId': 'order-1',
+            'status': 'SUCCESS',
+        }, format='json')
+        duplicate = client.post('/wallet/deposit/callback/', {
+            'integratorOrderId': 'order-1',
+            'status': 'SUCCESS',
+        }, format='json')
+
+        assert response.status_code == status.HTTP_200_OK
+        assert duplicate.status_code == status.HTTP_200_OK
+
+        wallet.refresh_from_db()
+        transaction.refresh_from_db()
+        assert wallet.balance == Decimal('30.00')
+        assert transaction.status == Transaction.STATUS_COMPLETED
+        assert transaction.credited_at is not None
+
+    def test_callback_failed_does_not_credit_wallet(self):
+        client = APIClient()
+        wallet = Wallet.objects.get(user=self.user)
+        transaction = Transaction.objects.create(
+            wallet=wallet,
+            type=Transaction.TYPE_DEPOSIT,
+            amount=Decimal('30.00'),
+            status=Transaction.STATUS_PENDING,
+            label='Keepz deposit',
+            provider=Transaction.PROVIDER_KEEPZ,
+            provider_order_id='order-2',
+            provider_status='INITIAL',
+            provider_payload={},
+        )
+
+        response = client.post('/wallet/deposit/callback/', {
+            'integratorOrderId': 'order-2',
+            'status': 'FAILED',
+        }, format='json')
+
+        assert response.status_code == status.HTTP_200_OK
+        wallet.refresh_from_db()
+        transaction.refresh_from_db()
+        assert wallet.balance == Decimal('0.00')
+        assert transaction.status == Transaction.STATUS_FAILED
+
+    def test_deposit_status_success_reconciles_wallet_credit(self):
+        client = APIClient()
+        client.force_authenticate(user=self.user)
+        wallet = Wallet.objects.get(user=self.user)
+        transaction = Transaction.objects.create(
+            wallet=wallet,
+            type=Transaction.TYPE_DEPOSIT,
+            amount=Decimal('45.00'),
+            status=Transaction.STATUS_PENDING,
+            label='Keepz deposit',
+            provider=Transaction.PROVIDER_KEEPZ,
+            provider_order_id='order-3',
+            provider_status='INITIAL',
+            provider_payload={},
+        )
+
+        with patch('apps.wallet.views.KeepzClient') as mock_client_cls:
+            mock_client = Mock()
+            mock_client.get_order_status.return_value = {'status': 'SUCCESS'}
+            mock_client_cls.return_value = mock_client
+
+            response = client.get('/wallet/deposit/status/', {'order_id': 'order-3'})
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.data['status'] == Transaction.STATUS_COMPLETED
+        assert response.data['credited'] is True
+        wallet.refresh_from_db()
+        transaction.refresh_from_db()
+        assert wallet.balance == Decimal('45.00')
+        assert transaction.credited_at is not None
 
 
 class TestWalletViewSetIntegration(APITestCase):
@@ -274,10 +414,17 @@ class TestWalletViewSetIntegration(APITestCase):
 
     def test_deposit_endpoint_authenticated(self):
         """Test deposit endpoint requires authentication."""
-        response = self.client.post('/wallet/deposit/', {'amount': '100.00'})
+        with patch('apps.wallet.views.KeepzClient') as mock_client_cls:
+            mock_client = Mock()
+            mock_client.create_order.return_value = {
+                'urlForQR': 'https://keepz.test/checkout/integration',
+                'status': 'INITIAL',
+            }
+            mock_client_cls.return_value = mock_client
 
-        # Should return 200 since we're authenticated
-        assert response.status_code in [status.HTTP_200_OK, status.HTTP_404_NOT_FOUND]
+            response = self.client.post('/wallet/deposit/', {'amount': '100.00'})
+
+        assert response.status_code == status.HTTP_200_OK
 
     def test_endpoints_require_authentication(self):
         """Test that endpoints require authentication."""

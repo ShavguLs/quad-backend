@@ -197,6 +197,19 @@ USE_TZ = True
 STATIC_URL = 'static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 SITE_BASE_URL = env('SITE_BASE_URL', default='https://quaduni.com')
+KEEPZ_ECOMMERCE_BASE_URL = env(
+    'KEEPZ_ECOMMERCE_BASE_URL',
+    default='https://gateway.dev.keepz.me/ecommerce-service',
+)
+KEEPZ_IDENTIFIER = env('KEEPZ_IDENTIFIER', default='')
+KEEPZ_INTEGRATOR_ID = env('KEEPZ_INTEGRATOR_ID', default='')
+KEEPZ_RECEIVER_ID = env('KEEPZ_RECEIVER_ID', default='')
+KEEPZ_RECEIVER_TYPE = env('KEEPZ_RECEIVER_TYPE', default='BRANCH')
+KEEPZ_PROVIDER_PUBLIC_KEY = env('KEEPZ_PROVIDER_PUBLIC_KEY', default='')
+KEEPZ_INTEGRATOR_PRIVATE_KEY = env('KEEPZ_INTEGRATOR_PRIVATE_KEY', default='')
+KEEPZ_INTEGRATOR_PUBLIC_KEY = env('KEEPZ_INTEGRATOR_PUBLIC_KEY', default='')
+KEEPZ_RSA_PADDING = env('KEEPZ_RSA_PADDING', default='OAEP')
+KEEPZ_DEFAULT_CURRENCY = env('KEEPZ_DEFAULT_CURRENCY', default='GEL')
 
 # Media files (user uploads)
 MEDIA_URL = 'media/'

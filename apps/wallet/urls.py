@@ -1,18 +1,15 @@
-"""
-URL configuration for wallet app.
+"""URL configuration for wallet app."""
 
-Routes wallet endpoints:
-- /wallet/stats/ - Wallet statistics
-- /wallet/transactions/ - Transaction history
-"""
-
+from django.urls import path
 from rest_framework.routers import DefaultRouter
 
-from apps.wallet.views import WalletViewSet
+from apps.wallet.views import WalletDepositCallbackView, WalletViewSet
 
 app_name = 'wallet'
 
 router = DefaultRouter()
 router.register(r'', WalletViewSet, basename='wallet')
 
-urlpatterns = router.urls
+urlpatterns = [
+    path('deposit/callback/', WalletDepositCallbackView.as_view(), name='deposit-callback'),
+] + router.urls

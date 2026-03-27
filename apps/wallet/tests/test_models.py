@@ -369,3 +369,31 @@ class TestTransactionModel:
         )
 
         assert transaction.amount == Decimal("99.99")
+
+    def test_transaction_provider_fields_persist(self):
+        user = User.objects.create_user(
+            email="provider@example.com",
+            password="secret123",
+            first_name="Provider",
+            last_name="User",
+            handle="provideruser",
+        )
+        wallet = user.wallet
+
+        transaction = Transaction.objects.create(
+            wallet=wallet,
+            type=Transaction.TYPE_DEPOSIT,
+            amount=Decimal("25.00"),
+            status=Transaction.STATUS_PENDING,
+            label="Keepz deposit",
+            provider=Transaction.PROVIDER_KEEPZ,
+            provider_order_id="order-123",
+            provider_status="INITIAL",
+            provider_payload={"urlForQR": "https://keepz.test/pay"},
+        )
+
+        assert transaction.provider == Transaction.PROVIDER_KEEPZ
+        assert transaction.provider_order_id == "order-123"
+        assert transaction.provider_status == "INITIAL"
+        assert transaction.provider_payload["urlForQR"] == "https://keepz.test/pay"
+        assert transaction.credited_at is None

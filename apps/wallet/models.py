@@ -60,6 +60,8 @@ class Wallet(models.Model):
 
 class Transaction(models.Model):
     """Transaction record for wallet operations."""
+
+    PROVIDER_KEEPZ = 'KEEPZ'
     
     TYPE_SALE = 'SALE'
     TYPE_DEPOSIT = 'DEPOSIT'
@@ -102,6 +104,30 @@ class Transaction(models.Model):
     label = models.CharField(
         max_length=255,
         help_text='Human-readable description'
+    )
+    provider = models.CharField(
+        max_length=20,
+        null=True,
+        blank=True,
+    )
+    provider_order_id = models.CharField(
+        max_length=255,
+        null=True,
+        blank=True,
+        db_index=True,
+    )
+    provider_status = models.CharField(
+        max_length=50,
+        null=True,
+        blank=True,
+    )
+    provider_payload = models.JSONField(
+        default=dict,
+        blank=True,
+    )
+    credited_at = models.DateTimeField(
+        null=True,
+        blank=True,
     )
     created_at = models.DateTimeField(auto_now_add=True)
     
