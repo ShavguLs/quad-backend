@@ -348,6 +348,66 @@ class TestWalletViewSet:
         assert transaction.status == Transaction.STATUS_COMPLETED
         assert transaction.credited_at is not None
 
+    def test_callback_with_alternate_success_status(self):
+        client = APIClient()
+        wallet = Wallet.objects.get(user=self.user)
+        transaction = Transaction.objects.create(
+            wallet=wallet,
+            type=Transaction.TYPE_DEPOSIT,
+            amount=Decimal('25.00'),
+            status=Transaction.STATUS_PENDING,
+            label='Keepz deposit',
+            provider=Transaction.PROVIDER_KEEPZ,
+            provider_order_id='order-approved-callback',
+            provider_status='INITIAL',
+            provider_payload={},
+        )
+
+        response = client.post('/wallet/deposit/callback/', {
+            'integratorOrderId': 'order-approved-callback',
+            'status': 'APPROVED',
+        }, format='json')
+
+        assert response.status_code == status.HTTP_200_OK
+        wallet.refresh_from_db()
+        transaction.refresh_from_db()
+        assert wallet.balance == Decimal('25.00')
+        assert transaction.status == Transaction.STATUS_COMPLETED
+        assert transaction.provider_status == 'APPROVED'
+        assert transaction.credited_at is not None
+
+    def test_callback_form_payload_credits_wallet(self):
+        client = APIClient()
+        wallet = Wallet.objects.get(user=self.user)
+        transaction = Transaction.objects.create(
+            wallet=wallet,
+            type=Transaction.TYPE_DEPOSIT,
+            amount=Decimal('22.00'),
+            status=Transaction.STATUS_PENDING,
+            label='Keepz deposit',
+            provider=Transaction.PROVIDER_KEEPZ,
+            provider_order_id='order-form-callback',
+            provider_status='INITIAL',
+            provider_payload={},
+        )
+
+        response = client.post(
+            '/wallet/deposit/callback/',
+            {
+                'integratorOrderId': 'order-form-callback',
+                'status': 'SUCCESS',
+            },
+            format='multipart',
+        )
+
+        assert response.status_code == status.HTTP_200_OK
+        wallet.refresh_from_db()
+        transaction.refresh_from_db()
+        assert wallet.balance == Decimal('22.00')
+        assert transaction.status == Transaction.STATUS_COMPLETED
+        assert transaction.provider_status == 'SUCCESS'
+        assert transaction.credited_at is not None
+
     def test_callback_failed_does_not_credit_wallet(self):
         client = APIClient()
         wallet = Wallet.objects.get(user=self.user)
@@ -403,6 +463,70 @@ class TestWalletViewSet:
         wallet.refresh_from_db()
         transaction.refresh_from_db()
         assert wallet.balance == Decimal('45.00')
+        assert transaction.credited_at is not None
+
+    def test_deposit_status_with_alternate_success_status(self):
+        client = APIClient()
+        client.force_authenticate(user=self.user)
+        wallet = Wallet.objects.get(user=self.user)
+        transaction = Transaction.objects.create(
+            wallet=wallet,
+            type=Transaction.TYPE_DEPOSIT,
+            amount=Decimal('15.00'),
+            status=Transaction.STATUS_PENDING,
+            label='Keepz deposit',
+            provider=Transaction.PROVIDER_KEEPZ,
+            provider_order_id='order-approved-status',
+            provider_status='INITIAL',
+            provider_payload={},
+        )
+
+        with patch('apps.wallet.views.KeepzClient') as mock_client_cls:
+            mock_client = Mock()
+            mock_client.get_order_status.return_value = {'txStatus': 'APPROVED'}
+            mock_client_cls.return_value = mock_client
+
+            response = client.get('/wallet/deposit/status/', {'order_id': 'order-approved-status'})
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.data['status'] == Transaction.STATUS_COMPLETED
+        assert response.data['providerStatus'] == 'APPROVED'
+        assert response.data['credited'] is True
+        wallet.refresh_from_db()
+        transaction.refresh_from_db()
+        assert wallet.balance == Decimal('15.00')
+        assert transaction.credited_at is not None
+
+    def test_deposit_status_with_complete_status(self):
+        client = APIClient()
+        client.force_authenticate(user=self.user)
+        wallet = Wallet.objects.get(user=self.user)
+        transaction = Transaction.objects.create(
+            wallet=wallet,
+            type=Transaction.TYPE_DEPOSIT,
+            amount=Decimal('18.00'),
+            status=Transaction.STATUS_PENDING,
+            label='Keepz deposit',
+            provider=Transaction.PROVIDER_KEEPZ,
+            provider_order_id='order-complete-status',
+            provider_status='INITIAL',
+            provider_payload={},
+        )
+
+        with patch('apps.wallet.views.KeepzClient') as mock_client_cls:
+            mock_client = Mock()
+            mock_client.get_order_status.return_value = {'paymentStatus': 'COMPLETE'}
+            mock_client_cls.return_value = mock_client
+
+            response = client.get('/wallet/deposit/status/', {'order_id': 'order-complete-status'})
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.data['status'] == Transaction.STATUS_COMPLETED
+        assert response.data['providerStatus'] == 'COMPLETE'
+        assert response.data['credited'] is True
+        wallet.refresh_from_db()
+        transaction.refresh_from_db()
+        assert wallet.balance == Decimal('18.00')
         assert transaction.credited_at is not None
 
 

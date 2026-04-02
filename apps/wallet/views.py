@@ -26,8 +26,9 @@ from apps.wallet.serializers import (
 
 logger = logging.getLogger(__name__)
 
-KEEPZ_PENDING_STATUSES = {'INITIAL', 'PROCESSING'}
-KEEPZ_FAILED_STATUSES = {'FAILED', 'CANCELED', 'EXPIRED'}
+KEEPZ_PENDING_STATUSES = {'INITIAL', 'PROCESSING', 'PENDING', 'IN_PROGRESS', 'CREATED'}
+KEEPZ_SUCCESS_STATUSES = {'SUCCESS', 'APPROVED', 'PAID', 'COMPLETE', 'COMPLETED', 'SETTLED', 'CAPTURED'}
+KEEPZ_FAILED_STATUSES = {'FAILED', 'CANCELED', 'EXPIRED', 'DECLINED', 'REJECTED', 'REVERSED'}
 KEEPZ_REFUND_PREFIX = 'REFUND'
 
 
@@ -61,23 +62,58 @@ def _merge_provider_payload(transaction_obj: Transaction, key: str, payload: dic
 
 
 def _extract_keepz_status(payload: dict) -> str:
-    for key in ('status', 'orderStatus', 'paymentStatus'):
+    for key in (
+        'status',
+        'orderStatus',
+        'paymentStatus',
+        'txStatus',
+        'transactionStatus',
+        'state',
+        'resultCode',
+        'responseCode',
+        'keepzStatus',
+    ):
         value = payload.get(key)
         if isinstance(value, str) and value:
-            return value.upper()
+            normalized = value.upper()
+            logger.info(
+                'Keepz status extracted from payload: key=%s status=%r payload_keys=%s',
+                key,
+                normalized,
+                list(payload.keys()),
+            )
+            return normalized
+    logger.warning('Keepz payload had no recognized status field: %s', list(payload.keys()))
     return 'INITIAL'
 
 
 def _map_keepz_status(provider_status: str, current_status: str = Transaction.STATUS_PENDING) -> str:
+    mapped_status = Transaction.STATUS_PENDING
+
     if provider_status in KEEPZ_PENDING_STATUSES:
-        return Transaction.STATUS_PENDING
-    if provider_status == 'SUCCESS':
-        return Transaction.STATUS_COMPLETED
-    if provider_status in KEEPZ_FAILED_STATUSES:
-        return Transaction.STATUS_FAILED
-    if provider_status.startswith(KEEPZ_REFUND_PREFIX):
-        return current_status if current_status == Transaction.STATUS_COMPLETED else Transaction.STATUS_PENDING
-    return current_status or Transaction.STATUS_PENDING
+        mapped_status = Transaction.STATUS_PENDING
+    elif provider_status in KEEPZ_SUCCESS_STATUSES:
+        mapped_status = Transaction.STATUS_COMPLETED
+    elif provider_status in KEEPZ_FAILED_STATUSES:
+        mapped_status = Transaction.STATUS_FAILED
+    elif provider_status.startswith(KEEPZ_REFUND_PREFIX):
+        mapped_status = current_status if current_status == Transaction.STATUS_COMPLETED else Transaction.STATUS_PENDING
+    else:
+        mapped_status = current_status if current_status == Transaction.STATUS_COMPLETED else Transaction.STATUS_PENDING
+        logger.warning(
+            'Unknown Keepz status %r, preserving mapped status as %r (was %r)',
+            provider_status,
+            mapped_status,
+            current_status,
+        )
+
+    logger.info(
+        'Keepz status mapped: provider_status=%r current_status=%r mapped_status=%r',
+        provider_status,
+        current_status,
+        mapped_status,
+    )
+    return mapped_status
 
 
 def _handle_keepz_error(exc: KeepzError, integrator_order_id: str | None = None) -> tuple[str, int]:
@@ -113,22 +149,44 @@ def _extract_checkout_url(payload: dict) -> str | None:
     return None
 
 
+def _normalize_callback_payload(raw_payload) -> dict:
+    if hasattr(raw_payload, 'dict'):
+        normalized = raw_payload.dict()
+        if isinstance(normalized, dict):
+            return normalized
+    if isinstance(raw_payload, dict):
+        return raw_payload
+    return {}
+
+
 def _credit_wallet_if_needed(transaction_id: int, provider_status: str, payload: dict | None = None) -> Transaction:
     with db_transaction.atomic():
         transaction_obj = Transaction.objects.select_for_update().select_related('wallet').get(pk=transaction_id)
         wallet = Wallet.objects.select_for_update().get(pk=transaction_obj.wallet_id)
+        previous_balance = wallet.balance
+        was_credited = transaction_obj.credited_at is not None
         transaction_obj.provider_status = provider_status
         transaction_obj.status = _map_keepz_status(provider_status, transaction_obj.status)
         if payload is not None:
             transaction_obj.provider_payload = payload
 
-        if provider_status == 'SUCCESS' and transaction_obj.credited_at is None:
+        if provider_status in KEEPZ_SUCCESS_STATUSES and transaction_obj.credited_at is None:
             wallet.balance = wallet.balance + transaction_obj.amount
             wallet.save(update_fields=['balance', 'updated_at'])
             transaction_obj.credited_at = timezone.now()
             transaction_obj.status = Transaction.STATUS_COMPLETED
 
         transaction_obj.save(update_fields=['provider_status', 'status', 'provider_payload', 'credited_at'])
+        logger.info(
+            'Keepz credit reconciliation: transaction_id=%s provider_status=%r was_credited=%s is_credited=%s previous_balance=%s current_balance=%s transaction_status=%s',
+            transaction_obj.pk,
+            provider_status,
+            was_credited,
+            transaction_obj.credited_at is not None,
+            previous_balance,
+            wallet.balance,
+            transaction_obj.status,
+        )
         return transaction_obj
 
 
@@ -309,8 +367,21 @@ class WalletViewSet(viewsets.GenericViewSet):
             return Response({'error': message}, status=status_code)
 
         provider_status = _extract_keepz_status(keepz_response)
+        logger.info(
+            'Keepz deposit status response: order_id=%s keepz_response=%s extracted_status=%r',
+            order_id,
+            keepz_response,
+            provider_status,
+        )
         merged_payload = _merge_provider_payload(transaction_obj, 'order_status', keepz_response)
         transaction_obj = _credit_wallet_if_needed(transaction_obj.pk, provider_status, merged_payload)
+
+        logger.info(
+            'Keepz status resolution: extracted=%r, mapped=%r, transaction_id=%s',
+            provider_status,
+            transaction_obj.status,
+            transaction_obj.pk,
+        )
 
         return Response({
             'orderId': order_id,
@@ -327,7 +398,7 @@ class WalletDepositCallbackView(APIView):
     permission_classes = []
 
     def post(self, request):
-        payload = dict(request.data) if hasattr(request.data, 'items') else request.data
+        payload = _normalize_callback_payload(request.data)
         if not isinstance(payload, dict):
             return Response({'acknowledged': False}, status=status.HTTP_200_OK)
 
