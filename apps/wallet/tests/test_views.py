@@ -529,6 +529,168 @@ class TestWalletViewSet:
         assert wallet.balance == Decimal('18.00')
         assert transaction.credited_at is not None
 
+    def test_callback_with_encrypted_payload_credits_wallet(self):
+        """Test that encrypted callback payload is decrypted and credits wallet."""
+        client = APIClient()
+        wallet = Wallet.objects.get(user=self.user)
+        transaction = Transaction.objects.create(
+            wallet=wallet,
+            type=Transaction.TYPE_DEPOSIT,
+            amount=Decimal('35.00'),
+            status=Transaction.STATUS_PENDING,
+            label='Keepz deposit',
+            provider=Transaction.PROVIDER_KEEPZ,
+            provider_order_id='order-encrypted',
+            provider_status='INITIAL',
+            provider_payload={},
+        )
+
+        encrypted_payload = {
+            'encryptedData': 'DUMMY_ENCRYPTED_DATA',
+            'encryptedKeys': 'DUMMY_ENCRYPTED_KEYS',
+            'aes': True,
+        }
+        decrypted_callback = {
+            'integratorOrderId': 'order-encrypted',
+            'status': 'SUCCESS',
+        }
+
+        with patch('apps.wallet.views.KeepzClient') as mock_client_cls:
+            mock_client = Mock()
+            mock_client.decrypt_payload.return_value = decrypted_callback
+            mock_client_cls.return_value = mock_client
+
+            response = client.post(
+                '/wallet/deposit/callback/',
+                encrypted_payload,
+                format='json',
+            )
+
+        assert response.status_code == status.HTTP_200_OK
+        wallet.refresh_from_db()
+        transaction.refresh_from_db()
+        assert wallet.balance == Decimal('35.00')
+        assert transaction.status == Transaction.STATUS_COMPLETED
+        assert transaction.provider_status == 'SUCCESS'
+        assert transaction.credited_at is not None
+
+    def test_callback_with_encrypted_payload_unknown_order_returns_acknowledged(self):
+        """Test that encrypted callback for unknown order returns 200 OK."""
+        client = APIClient()
+
+        encrypted_payload = {
+            'encryptedData': 'DUMMY_ENCRYPTED_DATA',
+            'encryptedKeys': 'DUMMY_ENCRYPTED_KEYS',
+            'aes': True,
+        }
+        decrypted_callback = {
+            'integratorOrderId': 'unknown-order-id',
+            'status': 'SUCCESS',
+        }
+
+        with patch('apps.wallet.views.KeepzClient') as mock_client_cls:
+            mock_client = Mock()
+            mock_client.decrypt_payload.return_value = decrypted_callback
+            mock_client_cls.return_value = mock_client
+
+            response = client.post(
+                '/wallet/deposit/callback/',
+                encrypted_payload,
+                format='json',
+            )
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.data['acknowledged'] is False
+
+    def test_callback_decryption_failure_returns_acknowledged_false(self):
+        """Test that failed decryption returns 200 OK with acknowledged false."""
+        client = APIClient()
+
+        encrypted_payload = {
+            'encryptedData': 'DUMMY_ENCRYPTED_DATA',
+            'encryptedKeys': 'DUMMY_ENCRYPTED_KEYS',
+            'aes': True,
+        }
+
+        with patch('apps.wallet.views.KeepzClient') as mock_client_cls:
+            mock_client = Mock()
+            mock_client.decrypt_payload.side_effect = KeepzError('Decryption failed')
+            mock_client_cls.return_value = mock_client
+
+            response = client.post(
+                '/wallet/deposit/callback/',
+                encrypted_payload,
+                format='json',
+            )
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.data['acknowledged'] is False
+
+    def test_deposit_status_6054_error_returns_graceful_response(self):
+        """Test that 6054 Keepz error returns 200 with current transaction state."""
+        client = APIClient()
+        client.force_authenticate(user=self.user)
+        wallet = Wallet.objects.get(user=self.user)
+        transaction = Transaction.objects.create(
+            wallet=wallet,
+            type=Transaction.TYPE_DEPOSIT,
+            amount=Decimal('50.00'),
+            status=Transaction.STATUS_PENDING,
+            label='Keepz deposit',
+            provider=Transaction.PROVIDER_KEEPZ,
+            provider_order_id='order-6054-test',
+            provider_status='INITIAL',
+            provider_payload={},
+        )
+
+        with patch('apps.wallet.views.KeepzClient') as mock_client_cls:
+            mock_client = Mock()
+            mock_client.get_order_status.side_effect = KeepzError(
+                'Cannot read the array length because "array" is null',
+                status_code='6054',
+                exception_group='6',
+            )
+            mock_client_cls.return_value = mock_client
+
+            response = client.get('/wallet/deposit/status/', {'order_id': 'order-6054-test'})
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.data['status'] == Transaction.STATUS_PENDING
+        assert response.data['credited'] is False
+        assert response.data['warning'] is not None
+        assert 'Keepz' in response.data['warning']
+
+    def test_deposit_status_other_error_returns_502(self):
+        """Test that non-6054 Keepz errors return 502."""
+        client = APIClient()
+        client.force_authenticate(user=self.user)
+        wallet = Wallet.objects.get(user=self.user)
+        transaction = Transaction.objects.create(
+            wallet=wallet,
+            type=Transaction.TYPE_DEPOSIT,
+            amount=Decimal('50.00'),
+            status=Transaction.STATUS_PENDING,
+            label='Keepz deposit',
+            provider=Transaction.PROVIDER_KEEPZ,
+            provider_order_id='order-6026-test',
+            provider_status='INITIAL',
+            provider_payload={},
+        )
+
+        with patch('apps.wallet.views.KeepzClient') as mock_client_cls:
+            mock_client = Mock()
+            mock_client.get_order_status.side_effect = KeepzError(
+                'Amount out of limit range',
+                status_code='6026',
+                exception_group='1',
+            )
+            mock_client_cls.return_value = mock_client
+
+            response = client.get('/wallet/deposit/status/', {'order_id': 'order-6026-test'})
+
+        assert response.status_code == status.HTTP_502_BAD_GATEWAY
+        assert 'error' in response.data
+
 
 class TestWalletViewSetIntegration(APITestCase):
     """Integration tests for WalletViewSet using APIClient."""

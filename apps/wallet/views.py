@@ -28,6 +28,14 @@ logger = logging.getLogger(__name__)
 
 KEEPZ_PENDING_STATUSES = {'INITIAL', 'PROCESSING', 'PENDING', 'IN_PROGRESS', 'CREATED'}
 KEEPZ_SUCCESS_STATUSES = {'SUCCESS', 'APPROVED', 'PAID', 'COMPLETE', 'COMPLETED', 'SETTLED', 'CAPTURED'}
+KEEPZ_REFUND_STATUSES = {
+    'REFUND_REQUESTED',
+    'PARTIALLY_REFUNDED',
+    'REFUNDED_BY_OPERATOR',
+    'REFUNDED_BY_INTEGRATOR',
+    'REFUNDED_BY_KEEPZ',
+    'REFUNDED_FAILED',
+}
 KEEPZ_FAILED_STATUSES = {'FAILED', 'CANCELED', 'EXPIRED', 'DECLINED', 'REJECTED', 'REVERSED'}
 KEEPZ_REFUND_PREFIX = 'REFUND'
 
@@ -94,18 +102,15 @@ def _map_keepz_status(provider_status: str, current_status: str = Transaction.ST
         mapped_status = Transaction.STATUS_PENDING
     elif provider_status in KEEPZ_SUCCESS_STATUSES:
         mapped_status = Transaction.STATUS_COMPLETED
+    elif provider_status in KEEPZ_REFUND_STATUSES:
+        mapped_status = current_status if current_status == Transaction.STATUS_COMPLETED else Transaction.STATUS_PENDING
     elif provider_status in KEEPZ_FAILED_STATUSES:
         mapped_status = Transaction.STATUS_FAILED
     elif provider_status.startswith(KEEPZ_REFUND_PREFIX):
         mapped_status = current_status if current_status == Transaction.STATUS_COMPLETED else Transaction.STATUS_PENDING
     else:
         mapped_status = current_status if current_status == Transaction.STATUS_COMPLETED else Transaction.STATUS_PENDING
-        logger.warning(
-            'Unknown Keepz status %r, preserving mapped status as %r (was %r)',
-            provider_status,
-            mapped_status,
-            current_status,
-        )
+        logger.warning('Unknown Keepz status %r, treating as PENDING (was %r)', provider_status, current_status)
 
     logger.info(
         'Keepz status mapped: provider_status=%r current_status=%r mapped_status=%r',
@@ -363,6 +368,22 @@ class WalletViewSet(viewsets.GenericViewSet):
         try:
             keepz_response = KeepzClient().get_order_status(order_id)
         except KeepzError as exc:
+            logger.warning(
+                'Keepz get_order_status failed for order %s: %s (statusCode=%s, exceptionGroup=%s)',
+                order_id,
+                exc.message,
+                exc.status_code,
+                exc.exception_group,
+            )
+            if exc.status_code == '6054':
+                return Response({
+                    'orderId': order_id,
+                    'status': transaction_obj.status,
+                    'providerStatus': transaction_obj.provider_status,
+                    'credited': transaction_obj.credited_at is not None,
+                    'amount': f'₾{transaction_obj.amount:.2f}',
+                    'warning': 'Payment status check failed on Keepz side. Please try again later.',
+                })
             message, status_code = _handle_keepz_error(exc, order_id)
             return Response({'error': message}, status=status_code)
 
@@ -398,9 +419,19 @@ class WalletDepositCallbackView(APIView):
     permission_classes = []
 
     def post(self, request):
-        payload = _normalize_callback_payload(request.data)
-        if not isinstance(payload, dict):
+        raw_payload = _normalize_callback_payload(request.data)
+        if not isinstance(raw_payload, dict):
             return Response({'acknowledged': False}, status=status.HTTP_200_OK)
+
+        if 'encryptedData' in raw_payload and 'encryptedKeys' in raw_payload:
+            try:
+                payload = KeepzClient().decrypt_payload(raw_payload)
+                logger.info('Keepz callback decrypted successfully')
+            except KeepzError as exc:
+                logger.warning('Keepz callback decryption failed: %s', exc.message)
+                return Response({'acknowledged': False}, status=status.HTTP_200_OK)
+        else:
+            payload = raw_payload
 
         order_id = _extract_order_id(payload)
         if not order_id:
