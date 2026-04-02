@@ -361,7 +361,13 @@ class BookViewSet(viewsets.ModelViewSet):
                 {'detail': 'Only the book owner can upload files.'},
                 status=status.HTTP_403_FORBIDDEN
             )
-        
+
+        if not request.user.can_upload_books:
+            return Response(
+                {'detail': 'You do not have upload privilege.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
         # Check file provided
         if 'file' not in request.FILES:
             return Response(

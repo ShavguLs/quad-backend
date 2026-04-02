@@ -31,6 +31,7 @@ class ReaderAccessApiTests(TestCase):
             first_name='Owner',
             last_name='User',
             handle='owner_user',
+            can_upload_books=True,
         )
         self.buyer = User.objects.create_user(
             email='buyer@example.com',
@@ -239,6 +240,22 @@ class ReaderAccessApiTests(TestCase):
         self.book.refresh_from_db()
         self.assertEqual(self.book.extraction_status, 'processing')
         self.assertFalse(self.book.is_visible)
+
+    @patch('apps.books.tasks.process_book_upload_task.delay')
+    def test_upload_requires_upload_privilege(self, mocked_delay):
+        self.owner.can_upload_books = False
+        self.owner.save(update_fields=['can_upload_books'])
+        self.client.force_authenticate(self.owner)
+
+        response = self.client.post(
+            f'/books/{self.book.id}/upload/',
+            {'file': _minimal_pdf_file()},
+            format='multipart',
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.data['detail'], 'You do not have upload privilege.')
+        mocked_delay.assert_not_called()
 
     @patch('apps.books.tasks.process_book_upload_task.delay')
     def test_auto_backfill_queues_when_content_missing(self, mocked_delay):

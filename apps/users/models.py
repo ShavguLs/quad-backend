@@ -78,6 +78,10 @@ class User(AbstractBaseUser, PermissionsMixin):
     updated_at = models.DateTimeField(auto_now=True)
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
+    can_upload_books = models.BooleanField(
+        default=False,
+        help_text="Designates whether this user can upload books.",
+    )
 
     objects = UserManager()
 

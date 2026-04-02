@@ -43,6 +43,7 @@ class TestEndToEndWorkflow(TestCase):
             first_name='Test',
             last_name='Author',
             handle='testauthor',
+            can_upload_books=True,
         )
         self.client.force_authenticate(user=self.user)
         
