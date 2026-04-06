@@ -27,6 +27,7 @@ urlpatterns = [
     path('me/books/', MyBooksAnalyticsView.as_view(), name='me-books'),
     path('admin/', admin.site.urls),
     path('auth/', include('apps.auth.urls')),
+    path('blog/', include('apps.ads.urls')),
     path('books/', include('apps.books.urls')),
     path('library/', include('apps.library.urls')),
     path('orders/', include('apps.orders.urls')),

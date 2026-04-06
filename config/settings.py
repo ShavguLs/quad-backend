@@ -79,6 +79,7 @@ INSTALLED_APPS = [
     'apps.wallet',
     'apps.orders',
     'apps.social',
+    'apps.ads',
 ]
 
 # Add django-storages only when using S3

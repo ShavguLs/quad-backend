@@ -3,9 +3,10 @@ from xml.sax.saxutils import escape
 from django.conf import settings
 from django.http import HttpRequest, HttpResponse
 
+from apps.ads.models import Ad
 from apps.books.models import Book
 
-SITEMAP_STATIC_ROUTES = ('/', '/books', '/community', '/reviews', '/terms')
+SITEMAP_STATIC_ROUTES = ('/', '/books', '/community', '/reviews', '/terms', '/blog/')
 
 
 def _absolute_url(path: str) -> str:
@@ -30,6 +31,11 @@ def sitemap_xml(request: HttpRequest) -> HttpResponse:
     entries.extend(
         _url_entry(_absolute_url(f'/book/{book.public_path_segment}'), book.updated_at.isoformat())
         for book in public_books
+    )
+    published_ads = Ad._default_manager.filter(is_published=True).only('slug', 'updated_at').order_by('id')
+    entries.extend(
+        _url_entry(_absolute_url(f'/blog/{ad.slug}/'), ad.updated_at.isoformat())
+        for ad in published_ads
     )
 
     xml = '\n'.join([
