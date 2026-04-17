@@ -9,7 +9,7 @@ from apps.orders.models import Order
 from apps.users.models import User
 
 
-def _minimal_pdf_file(name: str = 'sample.pdf') -> SimpleUploadedFile:
+def _minimal_pdf_file(name: str = "sample.pdf") -> SimpleUploadedFile:
     # Minimal PDF header/body that passes file-type checks.
     content = (
         b"%PDF-1.4\n"
@@ -19,38 +19,38 @@ def _minimal_pdf_file(name: str = 'sample.pdf') -> SimpleUploadedFile:
         b"xref\n0 4\n0000000000 65535 f\n0000000010 00000 n\n0000000060 00000 n\n0000000120 00000 n\n"
         b"trailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n180\n%%EOF"
     )
-    return SimpleUploadedFile(name, content, content_type='application/pdf')
+    return SimpleUploadedFile(name, content, content_type="application/pdf")
 
 
 class ReaderAccessApiTests(TestCase):
     def setUp(self):
         self.client = APIClient()
         self.owner = User.objects.create_user(
-            email='owner@example.com',
-            password='testpass123',
-            first_name='Owner',
-            last_name='User',
-            handle='owner_user',
+            email="owner@example.com",
+            password="testpass123",
+            first_name="Owner",
+            last_name="User",
+            handle="owner_user",
             can_upload_books=True,
         )
         self.buyer = User.objects.create_user(
-            email='buyer@example.com',
-            password='testpass123',
-            first_name='Buyer',
-            last_name='User',
-            handle='buyer_user',
+            email="buyer@example.com",
+            password="testpass123",
+            first_name="Buyer",
+            last_name="User",
+            handle="buyer_user",
         )
 
         self.book = Book.objects.create(
-            title='Reader Test',
-            author='Owner User',
+            title="Reader Test",
+            author="Owner User",
             owner=self.owner,
-            status='published',
+            status="published",
             is_visible=True,
-            extraction_status='completed',
+            extraction_status="completed",
             total_pages=5,
-            price='10.00',
-            category='BOOKS',
+            price="10.00",
+            category="BOOKS",
         )
 
         for page_number in range(1, 6):
@@ -60,25 +60,38 @@ class ReaderAccessApiTests(TestCase):
                 version=1,
                 blocks=[
                     {
-                        'id': f'blk_{page_number}_0',
-                        'type': 'paragraph',
-                        'text': f'Page {page_number} text',
-                        'metadata': {
-                            'render_mode': 'html',
-                            'render_html': f'<p>Page {page_number} text</p>',
-                            'source': 'extraction',
-                            'confidence': 1.0,
+                        "id": f"blk_{page_number}_0",
+                        "type": "paragraph",
+                        "text": f"Page {page_number} text",
+                        "metadata": {
+                            "render_mode": "html",
+                            "render_html": f"<p>Page {page_number} text</p>",
+                            "source": "extraction",
+                            "confidence": 1.0,
                         },
                     }
                 ],
             )
 
+    def _create_draft_book(self, title: str = "Draft Upload Test") -> Book:
+        return Book.objects.create(
+            title=title,
+            author="Owner User",
+            owner=self.owner,
+            status="draft",
+            is_visible=False,
+            extraction_status="pending",
+            total_pages=0,
+            price="10.00",
+            category="BOOKS",
+        )
+
     def test_manifest_access_modes_owner_buyer_anon(self):
         # Owner => full
         self.client.force_authenticate(self.owner)
-        response = self.client.get(f'/books/{self.book.id}/read/manifest/')
+        response = self.client.get(f"/books/{self.book.id}/read/manifest/")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data['access_mode'], 'full')
+        self.assertEqual(response.data["access_mode"], "full")
 
         # Buyer => full
         Order.objects.create(
@@ -88,16 +101,16 @@ class ReaderAccessApiTests(TestCase):
             status=Order.STATUS_COMPLETED,
         )
         self.client.force_authenticate(self.buyer)
-        response = self.client.get(f'/books/{self.book.id}/read/manifest/')
+        response = self.client.get(f"/books/{self.book.id}/read/manifest/")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data['access_mode'], 'full')
+        self.assertEqual(response.data["access_mode"], "full")
 
         # Anonymous => preview
         self.client.force_authenticate(None)
-        response = self.client.get(f'/books/{self.book.id}/read/manifest/')
+        response = self.client.get(f"/books/{self.book.id}/read/manifest/")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data['access_mode'], 'preview')
-        self.assertEqual(response.data['preview_limit'], 3)
+        self.assertEqual(response.data["access_mode"], "preview")
+        self.assertEqual(response.data["preview_limit"], 3)
 
     def test_reader_cache_is_scoped_by_access(self):
         Order.objects.create(
@@ -109,42 +122,42 @@ class ReaderAccessApiTests(TestCase):
 
         # Warm full-access cache as buyer.
         self.client.force_authenticate(self.buyer)
-        full_manifest = self.client.get(f'/books/{self.book.id}/read/manifest/')
+        full_manifest = self.client.get(f"/books/{self.book.id}/read/manifest/")
         self.assertEqual(full_manifest.status_code, 200)
-        self.assertEqual(full_manifest.data['access_mode'], 'full')
+        self.assertEqual(full_manifest.data["access_mode"], "full")
 
-        full_page = self.client.get(f'/books/{self.book.id}/read/pages/4/')
+        full_page = self.client.get(f"/books/{self.book.id}/read/pages/4/")
         self.assertEqual(full_page.status_code, 200)
-        self.assertEqual(full_page.data['page_number'], 4)
+        self.assertEqual(full_page.data["page_number"], 4)
 
         # Anonymous must still be preview-scoped.
         self.client.force_authenticate(None)
-        preview_manifest = self.client.get(f'/books/{self.book.id}/read/manifest/')
+        preview_manifest = self.client.get(f"/books/{self.book.id}/read/manifest/")
         self.assertEqual(preview_manifest.status_code, 200)
-        self.assertEqual(preview_manifest.data['access_mode'], 'preview')
+        self.assertEqual(preview_manifest.data["access_mode"], "preview")
 
-        preview_page = self.client.get(f'/books/{self.book.id}/read/pages/4/')
+        preview_page = self.client.get(f"/books/{self.book.id}/read/pages/4/")
         self.assertEqual(preview_page.status_code, 403)
-        self.assertEqual(preview_page.data['code'], 'purchase_required')
+        self.assertEqual(preview_page.data["code"], "purchase_required")
 
     def test_preview_limit_enforced(self):
         self.client.force_authenticate(None)
 
-        allowed = self.client.get(f'/books/{self.book.id}/read/pages/3/')
+        allowed = self.client.get(f"/books/{self.book.id}/read/pages/3/")
         self.assertEqual(allowed.status_code, 200)
-        self.assertEqual(allowed.data['page_number'], 3)
+        self.assertEqual(allowed.data["page_number"], 3)
 
-        blocked = self.client.get(f'/books/{self.book.id}/read/pages/4/')
+        blocked = self.client.get(f"/books/{self.book.id}/read/pages/4/")
         self.assertEqual(blocked.status_code, 403)
-        self.assertEqual(blocked.data['code'], 'purchase_required')
+        self.assertEqual(blocked.data["code"], "purchase_required")
 
     def test_reading_position_returns_null_payload_when_missing(self):
         self.client.force_authenticate(self.owner)
 
-        response = self.client.get(f'/books/{self.book.id}/reading-position/')
+        response = self.client.get(f"/books/{self.book.id}/reading-position/")
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data, {'page_number': None})
+        self.assertEqual(response.data, {"page_number": None})
 
     def test_reading_position_returns_saved_position_when_present(self):
         ReadingPosition.objects.create(
@@ -154,16 +167,16 @@ class ReaderAccessApiTests(TestCase):
         )
         self.client.force_authenticate(self.owner)
 
-        response = self.client.get(f'/books/{self.book.id}/reading-position/')
+        response = self.client.get(f"/books/{self.book.id}/reading-position/")
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data['page_number'], 3)
-        self.assertIn('updated_at', response.data)
+        self.assertEqual(response.data["page_number"], 3)
+        self.assertIn("updated_at", response.data)
 
     def test_reading_position_returns_404_for_missing_book(self):
         self.client.force_authenticate(self.owner)
 
-        response = self.client.get('/books/999999/reading-position/')
+        response = self.client.get("/books/999999/reading-position/")
 
         self.assertEqual(response.status_code, 404)
 
@@ -171,14 +184,14 @@ class ReaderAccessApiTests(TestCase):
         BookContent.objects.filter(book=self.book, page_number=1).update(
             blocks=[
                 {
-                    'id': 'blk_1_0',
-                    'type': 'paragraph',
-                    'text': 'Page 1 text',
-                    'metadata': {
-                        'render_mode': 'html',
-                        'render_html': '<p>Page 1 text</p>',
-                        'page_width': 510.0,
-                        'page_height': 760.0,
+                    "id": "blk_1_0",
+                    "type": "paragraph",
+                    "text": "Page 1 text",
+                    "metadata": {
+                        "render_mode": "html",
+                        "render_html": "<p>Page 1 text</p>",
+                        "page_width": 510.0,
+                        "page_height": 760.0,
                     },
                 }
             ]
@@ -186,14 +199,14 @@ class ReaderAccessApiTests(TestCase):
         BookContent.objects.filter(book=self.book, page_number=2).update(
             blocks=[
                 {
-                    'id': 'blk_2_0',
-                    'type': 'paragraph',
-                    'text': 'Page 2 text',
-                    'metadata': {
-                        'render_mode': 'html',
-                        'render_html': '<p>Page 2 text</p>',
-                        'page_width': 540.0,
-                        'page_height': 900.0,
+                    "id": "blk_2_0",
+                    "type": "paragraph",
+                    "text": "Page 2 text",
+                    "metadata": {
+                        "render_mode": "html",
+                        "render_html": "<p>Page 2 text</p>",
+                        "page_width": 540.0,
+                        "page_height": 900.0,
                     },
                 }
             ]
@@ -201,85 +214,167 @@ class ReaderAccessApiTests(TestCase):
         BookContent.objects.filter(book=self.book, page_number=3).update(
             blocks=[
                 {
-                    'id': 'blk_3_0',
-                    'type': 'paragraph',
-                    'text': 'Page 3 text',
-                    'metadata': {
-                        'render_mode': 'html',
-                        'render_html': '<p>Page 3 text</p>',
-                        'page_width': 560.0,
-                        'page_height': 900.0,
+                    "id": "blk_3_0",
+                    "type": "paragraph",
+                    "text": "Page 3 text",
+                    "metadata": {
+                        "render_mode": "html",
+                        "render_html": "<p>Page 3 text</p>",
+                        "page_width": 560.0,
+                        "page_height": 900.0,
                     },
                 }
             ]
         )
 
         self.client.force_authenticate(self.owner)
-        response = self.client.get(f'/books/{self.book.id}/read/manifest/')
+        response = self.client.get(f"/books/{self.book.id}/read/manifest/")
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data['page_frame_height'], 900.0)
-        self.assertEqual(response.data['page_frame_width'], 560.0)
+        self.assertEqual(response.data["page_frame_height"], 900.0)
+        self.assertEqual(response.data["page_frame_width"], 560.0)
 
-    @patch('apps.books.tasks.process_book_upload_task.delay')
+    @patch("apps.books.tasks.process_book_upload_task.delay")
     def test_upload_is_async_and_marks_processing(self, mocked_delay):
+        draft_book = self._create_draft_book()
         self.client.force_authenticate(self.owner)
 
         # captureOnCommitCallbacks(execute=True) forces on_commit hooks to run
         # within the test transaction so the mocked .delay() is actually called.
         with self.captureOnCommitCallbacks(execute=True):
             response = self.client.post(
-                f'/books/{self.book.id}/upload/',
-                {'file': _minimal_pdf_file()},
-                format='multipart',
+                f"/books/{draft_book.id}/upload/",
+                {"file": _minimal_pdf_file()},
+                format="multipart",
             )
         self.assertEqual(response.status_code, 202)
-        self.assertEqual(response.data['extraction_status'], 'processing')
-        mocked_delay.assert_called_once_with(self.book.id)
+        self.assertEqual(response.data["extraction_status"], "processing")
+        mocked_delay.assert_called_once_with(draft_book.id)
 
-        self.book.refresh_from_db()
-        self.assertEqual(self.book.extraction_status, 'processing')
-        self.assertFalse(self.book.is_visible)
+        draft_book.refresh_from_db()
+        self.assertEqual(draft_book.extraction_status, "processing")
+        self.assertFalse(draft_book.is_visible)
+        self.assertEqual(
+            draft_book.reader_render_preference,
+            Book.RENDER_PREFERENCE_TEXT,
+        )
 
-    @patch('apps.books.tasks.process_book_upload_task.delay')
-    def test_upload_requires_upload_privilege(self, mocked_delay):
-        self.owner.can_upload_books = False
-        self.owner.save(update_fields=['can_upload_books'])
+    @patch("apps.books.tasks.process_book_upload_task.delay")
+    def test_upload_accepts_and_persists_render_preference(self, mocked_delay):
+        draft_book = self._create_draft_book()
+        self.client.force_authenticate(self.owner)
+
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.client.post(
+                f"/books/{draft_book.id}/upload/",
+                {
+                    "file": _minimal_pdf_file(),
+                    "render_preference": Book.RENDER_PREFERENCE_EXACT_VISUAL,
+                },
+                format="multipart",
+            )
+
+        self.assertEqual(response.status_code, 202)
+        mocked_delay.assert_called_once_with(draft_book.id)
+
+        draft_book.refresh_from_db()
+        self.assertEqual(
+            draft_book.reader_render_preference,
+            Book.RENDER_PREFERENCE_EXACT_VISUAL,
+        )
+
+    @patch("apps.books.tasks.process_book_upload_task.delay")
+    def test_upload_rejects_invalid_render_preference(self, mocked_delay):
+        draft_book = self._create_draft_book()
         self.client.force_authenticate(self.owner)
 
         response = self.client.post(
-            f'/books/{self.book.id}/upload/',
-            {'file': _minimal_pdf_file()},
-            format='multipart',
+            f"/books/{draft_book.id}/upload/",
+            {
+                "file": _minimal_pdf_file(),
+                "render_preference": "bitmap_mode",
+            },
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Invalid render_preference", response.data["detail"])
+        mocked_delay.assert_not_called()
+
+    @patch("apps.books.tasks.process_book_upload_task.delay")
+    def test_upload_requires_upload_privilege(self, mocked_delay):
+        draft_book = self._create_draft_book()
+        self.owner.can_upload_books = False
+        self.owner.save(update_fields=["can_upload_books"])
+        self.client.force_authenticate(self.owner)
+
+        response = self.client.post(
+            f"/books/{draft_book.id}/upload/",
+            {"file": _minimal_pdf_file()},
+            format="multipart",
         )
 
         self.assertEqual(response.status_code, 403)
-        self.assertEqual(response.data['detail'], 'You do not have upload privilege.')
+        self.assertEqual(response.data["detail"], "You do not have upload privilege.")
         mocked_delay.assert_not_called()
 
-    @patch('apps.books.tasks.process_book_upload_task.delay')
+    @patch("apps.books.tasks.process_book_upload_task.delay")
+    def test_upload_requires_draft_book(self, mocked_delay):
+        self.client.force_authenticate(self.owner)
+
+        response = self.client.post(
+            f"/books/{self.book.id}/upload/",
+            {"file": _minimal_pdf_file()},
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("draft", response.data["detail"].lower())
+        mocked_delay.assert_not_called()
+
+    @patch("apps.books.tasks.process_book_upload_task.delay")
+    def test_upload_normalizes_mime_type_from_validated_file(self, mocked_delay):
+        draft_book = self._create_draft_book("Draft MIME Test")
+        self.client.force_authenticate(self.owner)
+
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.client.post(
+                f"/books/{draft_book.id}/upload/",
+                {"file": _minimal_pdf_file(name="mime-test.pdf")},
+                format="multipart",
+            )
+
+        self.assertEqual(response.status_code, 202)
+        stored_file = (
+            BookFile.objects.filter(book=draft_book).order_by("-uploaded_at").first()
+        )
+        self.assertIsNotNone(stored_file)
+        self.assertEqual(stored_file.mime_type, "application/pdf")
+        mocked_delay.assert_called_once_with(draft_book.id)
+
+    @patch("apps.books.tasks.process_book_upload_task.delay")
     def test_auto_backfill_queues_when_content_missing(self, mocked_delay):
         book = Book.objects.create(
-            title='Backfill Needed',
-            author='Owner User',
+            title="Backfill Needed",
+            author="Owner User",
             owner=self.owner,
-            status='published',
+            status="published",
             is_visible=True,
-            extraction_status='failed',
+            extraction_status="failed",
             total_pages=0,
-            price='12.00',
-            category='BOOKS',
+            price="12.00",
+            category="BOOKS",
         )
         BookFile.objects.create(
             book=book,
-            file=_minimal_pdf_file('backfill.pdf'),
-            original_filename='backfill.pdf',
+            file=_minimal_pdf_file("backfill.pdf"),
+            original_filename="backfill.pdf",
             file_size=128,
-            mime_type='application/pdf',
+            mime_type="application/pdf",
         )
 
         self.client.force_authenticate(None)
-        response = self.client.get(f'/books/{book.id}/read/manifest/')
+        response = self.client.get(f"/books/{book.id}/read/manifest/")
         self.assertEqual(response.status_code, 202)
-        self.assertEqual(response.data['status'], 'processing')
+        self.assertEqual(response.data["status"], "processing")
         mocked_delay.assert_called_once_with(book.id)
