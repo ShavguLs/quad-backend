@@ -86,6 +86,26 @@ class ReaderAccessApiTests(TestCase):
             category="BOOKS",
         )
 
+    def test_create_book_stays_draft_until_explicit_publish(self):
+        self.client.force_authenticate(self.owner)
+
+        response = self.client.post(
+            "/books/",
+            {
+                "title": "New Draft",
+                "author": "Owner User",
+                "price": "10.00",
+                "category": "BOOKS",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["status"], "draft")
+
+        created_book = Book.objects.get(id=response.data["id"])
+        self.assertEqual(created_book.status, "draft")
+
     def test_manifest_access_modes_owner_buyer_anon(self):
         # Owner => full
         self.client.force_authenticate(self.owner)
