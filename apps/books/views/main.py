@@ -63,7 +63,7 @@ class BookViewSet(viewsets.ModelViewSet):
     queryset = Book.objects.all()
     serializer_class = BookSerializer
     permission_classes = [IsAuthenticatedOrReadOnly, IsOwnerOrReadOnly]
-    PREVIEW_PAGE_LIMIT = 3
+    PREVIEW_PAGE_LIMIT = 10
     READER_CACHE_TIMEOUT = max(getattr(settings, "CACHE_DEFAULT_TIMEOUT", 300), 60)
 
     def get_queryset(self):
