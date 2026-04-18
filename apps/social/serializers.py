@@ -268,6 +268,7 @@ class CommunityPostSerializer(serializers.ModelSerializer):
         ]
         extra_kwargs = {
             "category": {"required": False, "allow_blank": True},
+            "likes": {"read_only": True},
         }
 
     def get_author(self, obj):

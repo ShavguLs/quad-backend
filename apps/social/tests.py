@@ -250,3 +250,18 @@ class CommunitySystemTests(APITestCase):
         )
 
         self.assertIn(response.status_code, {status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN})
+
+    def test_create_post_ignores_client_supplied_likes(self):
+        response = self.client.post(
+            '/community/posts/',
+            {
+                'content': 'Attempt to set likes field from client',
+                'category': 'discussion',
+                'likes': 99999,
+            },
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        created_post = CommunityPost.objects.get(pk=response.data['id'])
+        self.assertEqual(created_post.likes, 0)
+        self.assertEqual(response.data['likes'], 0)

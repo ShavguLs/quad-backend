@@ -330,14 +330,19 @@ class TestWalletViewSet:
             provider_payload={},
         )
 
-        response = client.post('/wallet/deposit/callback/', {
-            'integratorOrderId': 'order-1',
-            'status': 'SUCCESS',
-        }, format='json')
-        duplicate = client.post('/wallet/deposit/callback/', {
-            'integratorOrderId': 'order-1',
-            'status': 'SUCCESS',
-        }, format='json')
+        with patch('apps.wallet.views.KeepzClient') as mock_client_cls:
+            mock_client = Mock()
+            mock_client.get_order_status.return_value = {'status': 'SUCCESS'}
+            mock_client_cls.return_value = mock_client
+
+            response = client.post('/wallet/deposit/callback/', {
+                'integratorOrderId': 'order-1',
+                'status': 'SUCCESS',
+            }, format='json')
+            duplicate = client.post('/wallet/deposit/callback/', {
+                'integratorOrderId': 'order-1',
+                'status': 'SUCCESS',
+            }, format='json')
 
         assert response.status_code == status.HTTP_200_OK
         assert duplicate.status_code == status.HTTP_200_OK
@@ -363,10 +368,15 @@ class TestWalletViewSet:
             provider_payload={},
         )
 
-        response = client.post('/wallet/deposit/callback/', {
-            'integratorOrderId': 'order-approved-callback',
-            'status': 'APPROVED',
-        }, format='json')
+        with patch('apps.wallet.views.KeepzClient') as mock_client_cls:
+            mock_client = Mock()
+            mock_client.get_order_status.return_value = {'status': 'APPROVED'}
+            mock_client_cls.return_value = mock_client
+
+            response = client.post('/wallet/deposit/callback/', {
+                'integratorOrderId': 'order-approved-callback',
+                'status': 'APPROVED',
+            }, format='json')
 
         assert response.status_code == status.HTTP_200_OK
         wallet.refresh_from_db()
@@ -391,14 +401,19 @@ class TestWalletViewSet:
             provider_payload={},
         )
 
-        response = client.post(
-            '/wallet/deposit/callback/',
-            {
-                'integratorOrderId': 'order-form-callback',
-                'status': 'SUCCESS',
-            },
-            format='multipart',
-        )
+        with patch('apps.wallet.views.KeepzClient') as mock_client_cls:
+            mock_client = Mock()
+            mock_client.get_order_status.return_value = {'status': 'SUCCESS'}
+            mock_client_cls.return_value = mock_client
+
+            response = client.post(
+                '/wallet/deposit/callback/',
+                {
+                    'integratorOrderId': 'order-form-callback',
+                    'status': 'SUCCESS',
+                },
+                format='multipart',
+            )
 
         assert response.status_code == status.HTTP_200_OK
         wallet.refresh_from_db()
@@ -423,16 +438,53 @@ class TestWalletViewSet:
             provider_payload={},
         )
 
-        response = client.post('/wallet/deposit/callback/', {
-            'integratorOrderId': 'order-2',
-            'status': 'FAILED',
-        }, format='json')
+        with patch('apps.wallet.views.KeepzClient') as mock_client_cls:
+            mock_client = Mock()
+            mock_client.get_order_status.return_value = {'status': 'FAILED'}
+            mock_client_cls.return_value = mock_client
+
+            response = client.post('/wallet/deposit/callback/', {
+                'integratorOrderId': 'order-2',
+                'status': 'FAILED',
+            }, format='json')
 
         assert response.status_code == status.HTTP_200_OK
         wallet.refresh_from_db()
         transaction.refresh_from_db()
         assert wallet.balance == Decimal('0.00')
         assert transaction.status == Transaction.STATUS_FAILED
+
+    def test_callback_spoofed_success_status_does_not_credit_wallet(self):
+        client = APIClient()
+        wallet = Wallet.objects.get(user=self.user)
+        transaction = Transaction.objects.create(
+            wallet=wallet,
+            type=Transaction.TYPE_DEPOSIT,
+            amount=Decimal('32.00'),
+            status=Transaction.STATUS_PENDING,
+            label='Keepz deposit',
+            provider=Transaction.PROVIDER_KEEPZ,
+            provider_order_id='order-spoofed-status',
+            provider_status='INITIAL',
+            provider_payload={},
+        )
+
+        with patch('apps.wallet.views.KeepzClient') as mock_client_cls:
+            mock_client = Mock()
+            mock_client.get_order_status.return_value = {'status': 'FAILED'}
+            mock_client_cls.return_value = mock_client
+
+            response = client.post('/wallet/deposit/callback/', {
+                'integratorOrderId': 'order-spoofed-status',
+                'status': 'SUCCESS',
+            }, format='json')
+
+        assert response.status_code == status.HTTP_200_OK
+        wallet.refresh_from_db()
+        transaction.refresh_from_db()
+        assert wallet.balance == Decimal('0.00')
+        assert transaction.status == Transaction.STATUS_FAILED
+        assert transaction.provider_status == 'FAILED'
 
     def test_deposit_status_success_reconciles_wallet_credit(self):
         client = APIClient()
@@ -558,6 +610,7 @@ class TestWalletViewSet:
         with patch('apps.wallet.views.KeepzClient') as mock_client_cls:
             mock_client = Mock()
             mock_client.decrypt_payload.return_value = decrypted_callback
+            mock_client.get_order_status.return_value = {'status': 'SUCCESS'}
             mock_client_cls.return_value = mock_client
 
             response = client.post(
@@ -625,6 +678,36 @@ class TestWalletViewSet:
 
         assert response.status_code == status.HTTP_200_OK
         assert response.data['acknowledged'] is False
+
+    def test_callback_keepz_verification_failure_returns_acknowledged_false(self):
+        client = APIClient()
+        wallet = Wallet.objects.get(user=self.user)
+        Transaction.objects.create(
+            wallet=wallet,
+            type=Transaction.TYPE_DEPOSIT,
+            amount=Decimal('27.00'),
+            status=Transaction.STATUS_PENDING,
+            label='Keepz deposit',
+            provider=Transaction.PROVIDER_KEEPZ,
+            provider_order_id='order-verify-error',
+            provider_status='INITIAL',
+            provider_payload={},
+        )
+
+        with patch('apps.wallet.views.KeepzClient') as mock_client_cls:
+            mock_client = Mock()
+            mock_client.get_order_status.side_effect = KeepzError('Verification failed')
+            mock_client_cls.return_value = mock_client
+
+            response = client.post('/wallet/deposit/callback/', {
+                'integratorOrderId': 'order-verify-error',
+                'status': 'SUCCESS',
+            }, format='json')
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.data['acknowledged'] is False
+        wallet.refresh_from_db()
+        assert wallet.balance == Decimal('0.00')
 
     def test_deposit_status_6054_error_returns_graceful_response(self):
         """Test that 6054 Keepz error returns 200 with current transaction state."""

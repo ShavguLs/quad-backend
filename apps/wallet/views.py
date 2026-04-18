@@ -423,9 +423,11 @@ class WalletDepositCallbackView(APIView):
         if not isinstance(raw_payload, dict):
             return Response({'acknowledged': False}, status=status.HTTP_200_OK)
 
+        keepz_client = KeepzClient()
+
         if 'encryptedData' in raw_payload and 'encryptedKeys' in raw_payload:
             try:
-                payload = KeepzClient().decrypt_payload(raw_payload)
+                payload = keepz_client.decrypt_payload(raw_payload)
                 logger.info('Keepz callback decrypted successfully')
             except KeepzError as exc:
                 logger.warning('Keepz callback decryption failed: %s', exc.message)
@@ -446,7 +448,14 @@ class WalletDepositCallbackView(APIView):
             logger.warning('Keepz callback received for unknown order %s', order_id)
             return Response({'acknowledged': False}, status=status.HTTP_200_OK)
 
-        provider_status = _extract_keepz_status(payload)
+        try:
+            keepz_response = keepz_client.get_order_status(order_id)
+        except KeepzError as exc:
+            logger.warning('Keepz callback status verification failed for %s: %s', order_id, exc.message)
+            return Response({'acknowledged': False}, status=status.HTTP_200_OK)
+
+        provider_status = _extract_keepz_status(keepz_response)
         merged_payload = _merge_provider_payload(transaction_obj, 'callback', payload)
+        merged_payload['verified_order_status'] = keepz_response
         _credit_wallet_if_needed(transaction_obj.pk, provider_status, merged_payload)
         return Response({'acknowledged': True}, status=status.HTTP_200_OK)
