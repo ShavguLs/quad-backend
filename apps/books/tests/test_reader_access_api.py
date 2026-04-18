@@ -171,6 +171,56 @@ class ReaderAccessApiTests(TestCase):
         self.assertEqual(blocked.status_code, 403)
         self.assertEqual(blocked.data["code"], "purchase_required")
 
+    def test_read_page_redacts_private_storage_urls_from_html_and_blocks(self):
+        BookContent.objects.filter(book=self.book, page_number=2).update(
+            blocks=[
+                {
+                    "id": "blk_2_0",
+                    "type": "paragraph",
+                    "text": "private link",
+                    "metadata": {
+                        "render_mode": "html",
+                        "render_html": '<p><img src="https://media.quaduni.com/books/files/2026/04/secret.pdf" /></p>',
+                    },
+                },
+                {
+                    "id": "blk_2_1",
+                    "type": "image",
+                    "metadata": {
+                        "source_url": "https://media.quaduni.com/extracted_images/test/page-2.png",
+                        "safe_label": "page image",
+                    },
+                },
+            ]
+        )
+
+        self.client.force_authenticate(self.owner)
+        response = self.client.get(f"/books/{self.book.id}/read/pages/2/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("books/files/", response.data["render_html"])
+        self.assertIn('src="#"', response.data["render_html"])
+        self.assertEqual(response.data["blocks"][1]["metadata"]["source_url"], None)
+        self.assertEqual(response.data["blocks"][1]["metadata"]["safe_label"], "page image")
+
+    @patch("apps.books.tasks.process_book_upload_task.delay")
+    def test_upload_response_does_not_expose_private_download_url(self, mocked_delay):
+        draft_book = self._create_draft_book("Draft Upload Contract")
+        self.client.force_authenticate(self.owner)
+
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.client.post(
+                f"/books/{draft_book.id}/upload/",
+                {"file": _minimal_pdf_file("contract.pdf")},
+                format="multipart",
+            )
+
+        self.assertEqual(response.status_code, 202)
+        self.assertIn("file", response.data)
+        self.assertIn("download_url", response.data["file"])
+        self.assertIsNone(response.data["file"]["download_url"])
+        mocked_delay.assert_called_once_with(draft_book.id)
+
     def test_reading_position_returns_null_payload_when_missing(self):
         self.client.force_authenticate(self.owner)
 

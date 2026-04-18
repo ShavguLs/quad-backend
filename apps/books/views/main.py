@@ -6,6 +6,7 @@ import base64
 import html
 import logging
 import mimetypes
+import re
 
 from django.conf import settings
 from django.core.cache import cache
@@ -65,6 +66,11 @@ class BookViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticatedOrReadOnly, IsOwnerOrReadOnly]
     PREVIEW_PAGE_LIMIT = 10
     READER_CACHE_TIMEOUT = max(getattr(settings, "CACHE_DEFAULT_TIMEOUT", 300), 60)
+    PRIVATE_STORAGE_PREFIXES = (
+        "books/files/",
+        "draft_elements/images/",
+        "extracted_images/",
+    )
 
     def get_queryset(self):
         """
@@ -134,7 +140,7 @@ class BookViewSet(viewsets.ModelViewSet):
             if render_html:
                 return (
                     metadata.get("render_mode", "html"),
-                    render_html,
+                    self._redact_private_urls_in_html(render_html),
                     metadata.get("fallback_image_path"),
                 )
 
@@ -192,7 +198,58 @@ class BookViewSet(viewsets.ModelViewSet):
 
         if not html_parts:
             return ("html", "<p></p>", None)
-        return ("html", "\n".join(html_parts), None)
+        return ("html", self._redact_private_urls_in_html("\n".join(html_parts)), None)
+
+    @classmethod
+    def _contains_private_storage_prefix(cls, value: str) -> bool:
+        lowered = value.lower()
+        return any(prefix in lowered for prefix in cls.PRIVATE_STORAGE_PREFIXES)
+
+    @classmethod
+    def _looks_like_storage_reference(cls, value: str) -> bool:
+        normalized = value.strip().lower()
+        if not normalized:
+            return False
+        starts_like_ref = normalized.startswith(("http://", "https://", "/"))
+        return starts_like_ref or any(
+            normalized.startswith(prefix) for prefix in cls.PRIVATE_STORAGE_PREFIXES
+        )
+
+    @classmethod
+    def _redact_private_urls_in_html(cls, html_value: str) -> str:
+        if not isinstance(html_value, str) or not cls._contains_private_storage_prefix(
+            html_value
+        ):
+            return html_value
+
+        absolute_url_pattern = re.compile(
+            r"https?://[^\s\"'<>]*(?:books/files/|draft_elements/images/|extracted_images/)[^\s\"'<>]*",
+            flags=re.IGNORECASE,
+        )
+        relative_path_pattern = re.compile(
+            r"(?:/)?(?:books/files|draft_elements/images|extracted_images)/[^\s\"'<>]*",
+            flags=re.IGNORECASE,
+        )
+        redacted = absolute_url_pattern.sub("#", html_value)
+        return relative_path_pattern.sub("#", redacted)
+
+    @classmethod
+    def _sanitize_private_storage_references(cls, value):
+        if isinstance(value, dict):
+            return {
+                key: cls._sanitize_private_storage_references(nested_value)
+                for key, nested_value in value.items()
+            }
+
+        if isinstance(value, list):
+            return [cls._sanitize_private_storage_references(item) for item in value]
+
+        if isinstance(value, str) and cls._contains_private_storage_prefix(value):
+            if cls._looks_like_storage_reference(value):
+                return None
+            return cls._redact_private_urls_in_html(value)
+
+        return value
 
     @staticmethod
     def _extract_page_dimensions(blocks: list[dict]) -> tuple[float, float] | None:
@@ -660,7 +717,7 @@ class BookViewSet(viewsets.ModelViewSet):
             "render_mode": render_mode,
             "render_html": render_html,
             "fallback_image_data": fallback_image_data,
-            "blocks": page.blocks,
+            "blocks": self._sanitize_private_storage_references(page.blocks),
             "version": page.version,
             "page_width": page_width,
             "page_height": page_height,
