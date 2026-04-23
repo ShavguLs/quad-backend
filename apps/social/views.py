@@ -2,12 +2,14 @@ from datetime import timedelta
 
 from django.db import IntegrityError
 from django.db.models import BooleanField, Count, Exists, F, OuterRef, Q, Sum, Value
+from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
 from rest_framework.permissions import IsAuthenticated, IsAuthenticatedOrReadOnly
 from rest_framework.response import Response
+from rest_framework.throttling import ScopedRateThrottle
 
 from .models import CommunityPost, CommunityPostComment, Review, ReviewReply, ReviewVote, SavedCommunityPost, CommunityPostLike
 from .permissions import IsAuthor, IsOwnerOrReadOnly
@@ -146,9 +148,13 @@ class ReviewViewSet(viewsets.ModelViewSet):
 class CommunityPostViewSet(viewsets.ModelViewSet):
     serializer_class = CommunityPostSerializer
     permission_classes = [IsAuthenticatedOrReadOnly, IsOwnerOrReadOnly]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'community_writes'
 
     def get_queryset(self):
-        queryset = CommunityPost.objects.select_related("author").prefetch_related("post_comments").order_by("-created_at")
+        queryset = CommunityPost.objects.select_related("author").annotate(
+            comments_count=Count("post_comments")
+        ).order_by("-created_at")
         user = self.request.user
 
         if user.is_authenticated:
@@ -207,7 +213,8 @@ class CommunityPostViewSet(viewsets.ModelViewSet):
     def saved(self, request):
         saved_posts = CommunityPost.objects.filter(
             saved_by_users__user=request.user
-        ).select_related("author").prefetch_related("post_comments").annotate(
+        ).select_related("author").annotate(
+            comments_count=Count("post_comments"),
             is_saved=Value(True, output_field=BooleanField()),
             is_liked=Exists(
                 CommunityPostLike.objects.filter(post=OuterRef('pk'), user=request.user)
@@ -227,6 +234,8 @@ class CommunityPostCommentViewSet(viewsets.ModelViewSet):
     serializer_class = CommunityPostCommentSerializer
     permission_classes = [IsAuthenticatedOrReadOnly, IsAuthor]
     http_method_names = ['get', 'post', 'delete', 'head', 'options']
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'community_writes'
 
     def get_queryset(self):
         post_id = self.kwargs.get('post_pk')
@@ -236,7 +245,8 @@ class CommunityPostCommentViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         post_id = self.kwargs.get('post_pk')
-        serializer.save(post_id=post_id, author=self.request.user)
+        post = get_object_or_404(CommunityPost, pk=post_id)
+        serializer.save(post=post, author=self.request.user)
 
 
 class ReviewReplyViewSet(viewsets.ModelViewSet):

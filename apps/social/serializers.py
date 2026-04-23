@@ -1,5 +1,6 @@
 from datetime import timedelta
 
+from django.db import transaction
 from django.db.models import Sum
 from django.utils import timezone
 from rest_framework import serializers
@@ -210,29 +211,33 @@ class CommunityPostCommentSerializer(serializers.ModelSerializer):
             post = CommunityPost.objects.filter(pk=post_pk).only("id").first()
 
         if post is None:
-            return attrs
+            raise serializers.ValidationError("Post not found.")
 
         parent = attrs.get("parent")
         if parent is None:
-            top_level_count = CommunityPostComment.objects.filter(
-                post=post,
-                author=user,
-                parent__isnull=True,
-            ).count()
-            if top_level_count >= 3:
-                raise serializers.ValidationError("You can add at most 3 comments on one post.")
+            with transaction.atomic():
+                CommunityPost.objects.select_for_update().filter(pk=post.pk).first()
+                top_level_count = CommunityPostComment.objects.filter(
+                    post=post,
+                    author=user,
+                    parent__isnull=True,
+                ).count()
+                if top_level_count >= 3:
+                    raise serializers.ValidationError("You can add at most 3 comments on one post.")
             return attrs
 
         if parent.post_id != post.id:
             raise serializers.ValidationError("Reply must belong to the same post.")
 
-        reply_count = CommunityPostComment.objects.filter(
-            post=post,
-            author=user,
-            parent=parent,
-        ).count()
-        if reply_count >= 10:
-            raise serializers.ValidationError("You can add at most 10 replies to one comment.")
+        with transaction.atomic():
+            CommunityPost.objects.select_for_update().filter(pk=post.pk).first()
+            reply_count = CommunityPostComment.objects.filter(
+                post=post,
+                author=user,
+                parent=parent,
+            ).count()
+            if reply_count >= 10:
+                raise serializers.ValidationError("You can add at most 10 replies to one comment.")
 
         return attrs
 
@@ -284,12 +289,14 @@ class CommunityPostSerializer(serializers.ModelSerializer):
             return attrs
 
         today = timezone.localdate()
-        posts_today = CommunityPost.objects.filter(
-            author=user,
-            created_at__date=today,
-        ).count()
-        if posts_today >= 3:
-            raise serializers.ValidationError("You can add at most 3 community posts per day.")
+        with transaction.atomic():
+            CommunityPost.objects.select_for_update().filter(author=user).first()
+            posts_today = CommunityPost.objects.filter(
+                author=user,
+                created_at__date=today,
+            ).count()
+            if posts_today >= 3:
+                raise serializers.ValidationError("You can add at most 3 community posts per day.")
 
         return attrs
 
@@ -308,11 +315,13 @@ class CommunityPostSerializer(serializers.ModelSerializer):
         return obj.likes or 0
 
     def get_comments(self, obj):
+        annotated = getattr(obj, "comments_count", None)
+        if annotated is not None:
+            return annotated
         return obj.post_comments.count()
 
     def get_recent_comments(self, obj):
-        # We slice first 2 comments from the prefetched post_comments
-        comments = list(obj.post_comments.all())[:2]
+        comments = obj.post_comments.select_related("author").order_by("-created_at")[:2]
         return CommunityPostCommentSerializer(comments, many=True, context=self.context).data
 
     def get_is_saved(self, obj):

@@ -1,7 +1,10 @@
 """Views for orders app."""
 
+from datetime import timedelta
+
 from django.db import IntegrityError, transaction
 from django.db.models import F
+from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -72,7 +75,8 @@ class OrderViewSet(viewsets.ModelViewSet):
                 buyer=buyer,
                 book=book,
                 amount=book.price,
-                status=Order.STATUS_COMPLETED
+                status=Order.STATUS_COMPLETED,
+                expires_at=timezone.now() + timedelta(days=180)
             )
         except IntegrityError:
             transaction.set_rollback(True)

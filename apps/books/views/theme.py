@@ -92,10 +92,10 @@ class BookThemeViewSet(viewsets.GenericViewSet):
                 status=status.HTTP_404_NOT_FOUND
             )
         
-        # Check access permissions (only owner can update theme)
-        if not book.can_user_access(request.user):
+        # Check ownership (only owner or staff can update theme)
+        if book.owner_id != request.user.id and not request.user.is_staff:
             return Response(
-                {'detail': 'You do not have permission to access this book.'},
+                {'detail': 'Only the book owner can update the theme.'},
                 status=status.HTTP_403_FORBIDDEN
             )
         

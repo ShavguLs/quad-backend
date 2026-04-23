@@ -9,6 +9,7 @@ Provides ViewSets for user-specific library browsing:
 from unicodedata import normalize
 
 from django.db.models import Q
+from django.utils import timezone
 from rest_framework import viewsets
 from rest_framework.permissions import AllowAny, IsAuthenticated
 
@@ -38,6 +39,7 @@ class MyLibraryViewSet(viewsets.ReadOnlyModelViewSet):
                 | Q(
                     orders__buyer=self.request.user,
                     orders__status=Order.STATUS_COMPLETED,
+                    orders__expires_at__gt=timezone.now(),
                     status='published'
                 )
             )
@@ -64,7 +66,8 @@ class PurchasedLibraryViewSet(viewsets.ReadOnlyModelViewSet):
 
         purchased_book_ids = Order.objects.filter(
             buyer=self.request.user,
-            status=Order.STATUS_COMPLETED
+            status=Order.STATUS_COMPLETED,
+            expires_at__gt=timezone.now()
         ).values_list('book_id', flat=True)
 
         return Book.objects.filter(

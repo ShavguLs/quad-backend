@@ -64,7 +64,6 @@ class BookViewSet(viewsets.ModelViewSet):
     queryset = Book.objects.all()
     serializer_class = BookSerializer
     permission_classes = [IsAuthenticatedOrReadOnly, IsOwnerOrReadOnly]
-    PREVIEW_PAGE_LIMIT = 10
     READER_CACHE_TIMEOUT = max(getattr(settings, "CACHE_DEFAULT_TIMEOUT", 300), 60)
     PRIVATE_STORAGE_PREFIXES = (
         "books/files/",
@@ -112,9 +111,25 @@ class BookViewSet(viewsets.ModelViewSet):
     def _has_completed_purchase(book: Book, user) -> bool:
         if not user or not user.is_authenticated:
             return False
-        return Order.objects.filter(
+        order = Order.objects.filter(
             buyer=user, book=book, status=Order.STATUS_COMPLETED
-        ).exists()
+        ).first()
+        if order is None:
+            return False
+        if order.expires_at is not None and order.expires_at <= timezone.now():
+            return False
+        return True
+
+    def _get_expired_order(self, book: Book, user) -> Order | None:
+        """Get the expired order if user has a completed but expired purchase."""
+        if not user or not user.is_authenticated:
+            return None
+        order = Order.objects.filter(
+            buyer=user, book=book, status=Order.STATUS_COMPLETED
+        ).first()
+        if order and order.expires_at is not None and order.expires_at <= timezone.now():
+            return order
+        return None
 
     def _has_full_reader_access(self, book: Book, user) -> bool:
         return self._is_owner(book, user) or self._has_completed_purchase(book, user)
@@ -129,7 +144,7 @@ class BookViewSet(viewsets.ModelViewSet):
     def _reader_access_bucket(is_owner: bool, full_access: bool) -> str:
         if is_owner:
             return "owner"
-        return "full" if full_access else "preview"
+        return "full" if full_access else "denied"
 
     def _resolve_reader_html(self, blocks: list[dict]) -> tuple[str, str, str | None]:
         """Resolve a page render payload from stored blocks."""
@@ -567,11 +582,11 @@ class BookViewSet(viewsets.ModelViewSet):
         detail=True,
         methods=["get"],
         url_path="read/manifest",
-        permission_classes=[IsAuthenticatedOrReadOnly],
+        permission_classes=[IsAuthenticated],
     )
     def read_manifest(self, request, pk=None):
         """
-        Reader manifest endpoint with full/preview access mode.
+        Reader manifest endpoint — requires purchase or ownership.
         """
         book = self.get_object()
         is_owner = self._is_owner(book, request.user)
@@ -590,7 +605,6 @@ class BookViewSet(viewsets.ModelViewSet):
                     "status": "processing",
                     "extraction_status": book.extraction_status,
                     "total_pages": book.total_pages or 0,
-                    "preview_limit": self.PREVIEW_PAGE_LIMIT,
                     "access_mode": "processing",
                     "is_readable": False,
                     "page_frame_width": page_frame_width,
@@ -601,17 +615,31 @@ class BookViewSet(viewsets.ModelViewSet):
 
         total_pages = book.content_pages.count() or book.total_pages or 0
         full_access = self._has_full_reader_access(book, request.user)
-        access_mode = "full" if full_access else "preview"
+        expired_order = self._get_expired_order(book, request.user)
+        if expired_order is not None:
+            return Response(
+                {
+                    "code": "access_expired",
+                    "detail": "Your access to this book has expired. Please renew to continue reading.",
+                    "access_mode": "expired",
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if not is_owner and not full_access:
+            return Response(
+                {
+                    "code": "purchase_required",
+                    "detail": "Purchase required to read this book.",
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        access_mode = "full" if full_access else "owner"
         access_bucket = self._reader_access_bucket(is_owner, full_access)
         manifest_cache_key = f"reader:manifest:book:{book.pk}:access:{access_bucket}:v:{self._reader_cache_version(book)}"
 
         cached_manifest = cache.get(manifest_cache_key)
         if cached_manifest:
             return Response(cached_manifest)
-
-        available_pages = (
-            total_pages if full_access else min(self.PREVIEW_PAGE_LIMIT, total_pages)
-        )
 
         manifest_payload = {
             "book_id": book.pk,
@@ -621,8 +649,7 @@ class BookViewSet(viewsets.ModelViewSet):
             "status": "ready",
             "extraction_status": book.extraction_status,
             "total_pages": total_pages,
-            "available_pages": available_pages,
-            "preview_limit": self.PREVIEW_PAGE_LIMIT,
+            "available_pages": total_pages,
             "access_mode": access_mode,
             "is_readable": total_pages > 0
             and book.extraction_status in {"completed", "partial"},
@@ -640,11 +667,11 @@ class BookViewSet(viewsets.ModelViewSet):
         detail=True,
         methods=["get"],
         url_path=r"read/pages/(?P<page_number>\d+)",
-        permission_classes=[IsAuthenticatedOrReadOnly],
+        permission_classes=[IsAuthenticated],
     )
     def read_page(self, request, pk=None, page_number=None):
         """
-        Reader page endpoint with preview/full enforcement.
+        Reader page endpoint — requires purchase or ownership.
         """
         book = self.get_object()
         is_owner = self._is_owner(book, request.user)
@@ -678,16 +705,26 @@ class BookViewSet(viewsets.ModelViewSet):
             )
 
         full_access = self._has_full_reader_access(book, request.user)
-        access_bucket = self._reader_access_bucket(is_owner, full_access)
-        if not full_access and page_number > self.PREVIEW_PAGE_LIMIT:
+        expired_order = self._get_expired_order(book, request.user)
+        if expired_order is not None:
             return Response(
                 {
-                    "code": "purchase_required",
-                    "detail": "Purchase required to read beyond preview pages.",
-                    "preview_limit": self.PREVIEW_PAGE_LIMIT,
+                    "code": "access_expired",
+                    "detail": "Your access to this book has expired.",
+                    "access_mode": "expired",
                 },
                 status=status.HTTP_403_FORBIDDEN,
             )
+        if not is_owner and not full_access:
+            return Response(
+                {
+                    "code": "purchase_required",
+                    "detail": "Purchase required to read this book.",
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        access_bucket = self._reader_access_bucket(is_owner, full_access)
 
         page = BookContent.objects.filter(book=book, page_number=page_number).first()
         if page is None:
@@ -1066,6 +1103,11 @@ class SavedPageViewSet(viewsets.ViewSet):
     def list(self, request, book_id=None):
         """GET /books/<book_id>/saved-pages/ — return saved pages for this user+book."""
         book = get_object_or_404(Book, pk=book_id)
+        if not book.can_user_access(request.user):
+            return Response(
+                {"detail": "You do not have access to this book."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         pages = SavedPage.objects.filter(user=request.user, book=book)
         serializer = SavedPageSerializer(pages, many=True)
         return Response(
@@ -1079,6 +1121,11 @@ class SavedPageViewSet(viewsets.ViewSet):
     def create(self, request, book_id=None):
         """POST /books/<book_id>/saved-pages/ — save a page."""
         book = get_object_or_404(Book, pk=book_id)
+        if not book.can_user_access(request.user):
+            return Response(
+                {"detail": "You do not have access to this book."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
         page_number = request.data.get("page_number")
         try:
@@ -1139,6 +1186,11 @@ class SavedPageViewSet(viewsets.ViewSet):
     def destroy(self, request, book_id=None, page_number=None):
         """DELETE /books/<book_id>/saved-pages/<page_number>/ — unsave a page."""
         book = get_object_or_404(Book, pk=book_id)
+        if not book.can_user_access(request.user):
+            return Response(
+                {"detail": "You do not have access to this book."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         entry = get_object_or_404(
             SavedPage, user=request.user, book=book, page_number=page_number
         )
@@ -1148,6 +1200,11 @@ class SavedPageViewSet(viewsets.ViewSet):
     def destroy_all(self, request, book_id=None):
         """DELETE /books/<book_id>/saved-pages/ — clear all saved pages for this book."""
         book = get_object_or_404(Book, pk=book_id)
+        if not book.can_user_access(request.user):
+            return Response(
+                {"detail": "You do not have access to this book."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         SavedPage.objects.filter(user=request.user, book=book).delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -1160,6 +1217,11 @@ class ReadingPositionViewSet(viewsets.ViewSet):
     def retrieve(self, request, book_id=None):
         """GET /books/<book_id>/reading-position/ — return current position or null."""
         book = get_object_or_404(Book, pk=book_id)
+        if not book.can_user_access(request.user):
+            return Response(
+                {"detail": "You do not have access to this book."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         try:
             pos = ReadingPosition.objects.get(user=request.user, book=book)
         except ReadingPosition.DoesNotExist:
@@ -1169,6 +1231,11 @@ class ReadingPositionViewSet(viewsets.ViewSet):
     def update(self, request, book_id=None):
         """PUT /books/<book_id>/reading-position/ — upsert reading position."""
         book = get_object_or_404(Book, pk=book_id)
+        if not book.can_user_access(request.user):
+            return Response(
+                {"detail": "You do not have access to this book."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
         page_number = request.data.get("page_number")
         try:
@@ -1195,5 +1262,10 @@ class ReadingPositionViewSet(viewsets.ViewSet):
     def destroy(self, request, book_id=None):
         """DELETE /books/<book_id>/reading-position/ — clear position."""
         book = get_object_or_404(Book, pk=book_id)
+        if not book.can_user_access(request.user):
+            return Response(
+                {"detail": "You do not have access to this book."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         ReadingPosition.objects.filter(user=request.user, book=book).delete()
         return Response(status=status.HTTP_204_NO_CONTENT)

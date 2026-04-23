@@ -269,15 +269,19 @@ class Book(BookThemeMixin, models.Model):
 
     def can_user_access(self, user):
         """Check if user can access this book's content (owner or purchaser)."""
+        from django.utils import timezone
         from apps.orders.models import Order
 
         if self.owner == user:
             return True
-        if Order.objects.filter(
+        order = Order.objects.filter(
             book=self, buyer=user, status=Order.STATUS_COMPLETED
-        ).exists():
-            return True
-        return False
+        ).first()
+        if order is None:
+            return False
+        if order.expires_at is not None and order.expires_at <= timezone.now():
+            return False
+        return True
 
 
 class BookFile(models.Model):

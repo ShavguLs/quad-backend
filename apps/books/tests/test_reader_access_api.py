@@ -106,7 +106,7 @@ class ReaderAccessApiTests(TestCase):
         created_book = Book.objects.get(id=response.data["id"])
         self.assertEqual(created_book.status, "draft")
 
-    def test_manifest_access_modes_owner_buyer_anon(self):
+    def test_manifest_access_modes_owner_buyer_unauthenticated(self):
         # Owner => full
         self.client.force_authenticate(self.owner)
         response = self.client.get(f"/books/{self.book.id}/read/manifest/")
@@ -125,12 +125,10 @@ class ReaderAccessApiTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["access_mode"], "full")
 
-        # Anonymous => preview
+        # Unauthenticated => 401 (no preview allowed)
         self.client.force_authenticate(None)
         response = self.client.get(f"/books/{self.book.id}/read/manifest/")
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data["access_mode"], "preview")
-        self.assertEqual(response.data["preview_limit"], 10)
+        self.assertEqual(response.status_code, 401)
 
     def test_reader_cache_is_scoped_by_access(self):
         Order.objects.create(
@@ -150,26 +148,31 @@ class ReaderAccessApiTests(TestCase):
         self.assertEqual(full_page.status_code, 200)
         self.assertEqual(full_page.data["page_number"], 4)
 
-        # Anonymous must still be preview-scoped.
+        # Unauthenticated user cannot access reader endpoints.
         self.client.force_authenticate(None)
-        preview_manifest = self.client.get(f"/books/{self.book.id}/read/manifest/")
-        self.assertEqual(preview_manifest.status_code, 200)
-        self.assertEqual(preview_manifest.data["access_mode"], "preview")
+        manifest_resp = self.client.get(f"/books/{self.book.id}/read/manifest/")
+        self.assertEqual(manifest_resp.status_code, 401)
 
-        preview_page = self.client.get(f"/books/{self.book.id}/read/pages/11/")
-        self.assertEqual(preview_page.status_code, 403)
-        self.assertEqual(preview_page.data["code"], "purchase_required")
+        page_resp = self.client.get(f"/books/{self.book.id}/read/pages/11/")
+        self.assertEqual(page_resp.status_code, 401)
 
-    def test_preview_limit_enforced(self):
-        self.client.force_authenticate(None)
+    def test_purchase_required_for_non_buyer(self):
+        non_buyer = User.objects.create_user(
+            email="nonbuyer@example.com",
+            password="testpass123",
+            first_name="Non",
+            last_name="Buyer",
+            handle="non_buyer",
+        )
+        self.client.force_authenticate(non_buyer)
 
-        allowed = self.client.get(f"/books/{self.book.id}/read/pages/10/")
-        self.assertEqual(allowed.status_code, 200)
-        self.assertEqual(allowed.data["page_number"], 10)
+        response = self.client.get(f"/books/{self.book.id}/read/manifest/")
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.data["code"], "purchase_required")
 
-        blocked = self.client.get(f"/books/{self.book.id}/read/pages/11/")
-        self.assertEqual(blocked.status_code, 403)
-        self.assertEqual(blocked.data["code"], "purchase_required")
+        page_resp = self.client.get(f"/books/{self.book.id}/read/pages/1/")
+        self.assertEqual(page_resp.status_code, 403)
+        self.assertEqual(page_resp.data["code"], "purchase_required")
 
     def test_read_page_redacts_private_storage_urls_from_html_and_blocks(self):
         BookContent.objects.filter(book=self.book, page_number=2).update(
@@ -443,8 +446,66 @@ class ReaderAccessApiTests(TestCase):
             mime_type="application/pdf",
         )
 
-        self.client.force_authenticate(None)
+        self.client.force_authenticate(self.owner)
         response = self.client.get(f"/books/{book.id}/read/manifest/")
         self.assertEqual(response.status_code, 202)
         self.assertEqual(response.data["status"], "processing")
         mocked_delay.assert_called_once_with(book.id)
+
+    def test_saved_pages_requires_book_access(self):
+        non_buyer = User.objects.create_user(
+            email="nonbuyer2@example.com",
+            password="testpass123",
+            first_name="Non",
+            last_name="Buyer2",
+            handle="non_buyer2",
+        )
+        self.client.force_authenticate(non_buyer)
+
+        response = self.client.get(f"/books/{self.book.id}/saved-pages/")
+        self.assertEqual(response.status_code, 403)
+
+        response = self.client.post(
+            f"/books/{self.book.id}/saved-pages/",
+            {"page_number": 1},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_reading_position_requires_book_access(self):
+        non_buyer = User.objects.create_user(
+            email="nonbuyer3@example.com",
+            password="testpass123",
+            first_name="Non",
+            last_name="Buyer3",
+            handle="non_buyer3",
+        )
+        self.client.force_authenticate(non_buyer)
+
+        response = self.client.get(f"/books/{self.book.id}/reading-position/")
+        self.assertEqual(response.status_code, 403)
+
+        response = self.client.put(
+            f"/books/{self.book.id}/reading-position/",
+            {"page_number": 1},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_theme_update_requires_owner(self):
+        self.client.force_authenticate(self.buyer)
+        response = self.client.patch(
+            f"/books/{self.book.id}/theme/",
+            {"font_family": "serif"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertIn("owner", response.data["detail"].lower())
+
+        self.client.force_authenticate(self.owner)
+        response = self.client.patch(
+            f"/books/{self.book.id}/theme/",
+            {"font_family": "sans"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)

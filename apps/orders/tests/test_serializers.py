@@ -233,7 +233,7 @@ class TestOrderSerializer:
     def test_order_serializer_fields_are_read_only(self):
         """Test that all OrderSerializer fields are read-only."""
         assert OrderSerializer.Meta.read_only_fields == [
-            'id', 'bookTitle', 'price', 'img', 'status', 'timestamp'
+            'id', 'bookTitle', 'price', 'img', 'status', 'timestamp', 'expiresAt'
         ]
 
     def test_get_bookTitle_method(self):

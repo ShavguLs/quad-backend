@@ -14,17 +14,19 @@ class OrderSerializer(serializers.ModelSerializer):
     - price: formatted with ₾ prefix
     - img: book cover image URL (or None)
     - timestamp: ISO 8601 formatted created_at
+    - expiresAt: ISO 8601 formatted expires_at
     """
 
     bookTitle = serializers.SerializerMethodField()
     price = serializers.SerializerMethodField()
     img = serializers.SerializerMethodField()
     timestamp = serializers.SerializerMethodField()
+    expiresAt = serializers.SerializerMethodField()
 
     class Meta:
         model = Order
-        fields = ['id', 'bookTitle', 'price', 'img', 'status', 'timestamp']
-        read_only_fields = ['id', 'bookTitle', 'price', 'img', 'status', 'timestamp']
+        fields = ['id', 'bookTitle', 'price', 'img', 'status', 'timestamp', 'expiresAt']
+        read_only_fields = ['id', 'bookTitle', 'price', 'img', 'status', 'timestamp', 'expiresAt']
 
     def get_bookTitle(self, obj):
         """Return book title for frontend compatibility."""
@@ -46,6 +48,12 @@ class OrderSerializer(serializers.ModelSerializer):
     def get_timestamp(self, obj):
         """Return ISO 8601 formatted timestamp."""
         return obj.created_at.isoformat()
+
+    def get_expiresAt(self, obj):
+        """Return ISO 8601 formatted expiry timestamp."""
+        if obj.expires_at:
+            return obj.expires_at.isoformat()
+        return None
 
 
 class OrderCreateSerializer(serializers.Serializer):
