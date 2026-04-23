@@ -107,11 +107,11 @@ class ReaderAccessApiTests(TestCase):
         self.assertEqual(created_book.status, "draft")
 
     def test_manifest_access_modes_owner_buyer_unauthenticated(self):
-        # Owner => full
+        # Owner => owner
         self.client.force_authenticate(self.owner)
         response = self.client.get(f"/books/{self.book.id}/read/manifest/")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data["access_mode"], "full")
+        self.assertEqual(response.data["access_mode"], "owner")
 
         # Buyer => full
         Order.objects.create(
@@ -125,10 +125,12 @@ class ReaderAccessApiTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["access_mode"], "full")
 
-        # Unauthenticated => 401 (no preview allowed)
+        # Unauthenticated => preview access (first 10 pages)
         self.client.force_authenticate(None)
         response = self.client.get(f"/books/{self.book.id}/read/manifest/")
-        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["access_mode"], "preview")
+        self.assertEqual(response.data["available_pages"], 10)
 
     def test_reader_cache_is_scoped_by_access(self):
         Order.objects.create(
@@ -148,13 +150,15 @@ class ReaderAccessApiTests(TestCase):
         self.assertEqual(full_page.status_code, 200)
         self.assertEqual(full_page.data["page_number"], 4)
 
-        # Unauthenticated user cannot access reader endpoints.
+        # Unauthenticated user gets preview access.
         self.client.force_authenticate(None)
         manifest_resp = self.client.get(f"/books/{self.book.id}/read/manifest/")
-        self.assertEqual(manifest_resp.status_code, 401)
+        self.assertEqual(manifest_resp.status_code, 200)
+        self.assertEqual(manifest_resp.data["access_mode"], "preview")
 
-        page_resp = self.client.get(f"/books/{self.book.id}/read/pages/11/")
-        self.assertEqual(page_resp.status_code, 401)
+        page_resp = self.client.get(f"/books/{self.book.id}/read/pages/1/")
+        self.assertEqual(page_resp.status_code, 200)
+        self.assertEqual(page_resp.data["page_number"], 1)
 
     def test_purchase_required_for_non_buyer(self):
         non_buyer = User.objects.create_user(
@@ -509,3 +513,130 @@ class ReaderAccessApiTests(TestCase):
             format="json",
         )
         self.assertEqual(response.status_code, 200)
+
+    def test_guest_manifest_returns_preview_access_mode(self):
+        """Guest users should get preview access mode with 10-page cap."""
+        response = self.client.get(f"/books/{self.book.id}/read/manifest/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["access_mode"], "preview")
+        self.assertEqual(response.data["available_pages"], 10)
+        self.assertEqual(response.data["total_pages"], 11)
+        self.assertTrue(response.data["is_readable"])
+
+    def test_guest_can_access_first_10_pages(self):
+        """Guest users should be able to read pages 1-10."""
+        for page_num in range(1, 11):
+            response = self.client.get(f"/books/{self.book.id}/read/pages/{page_num}/")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.data["page_number"], page_num)
+            self.assertIn("render_html", response.data)
+
+    def test_guest_blocked_beyond_page_10(self):
+        """Guest users should be blocked from reading page 11+."""
+        response = self.client.get(f"/books/{self.book.id}/read/pages/11/")
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.data["code"], "preview_limit_exceeded")
+        self.assertEqual(response.data["access_mode"], "preview")
+
+    def test_guest_preview_respects_book_visibility(self):
+        """Guest users should not access draft or invisible books."""
+        draft_book = Book.objects.create(
+            title="Draft Preview Test",
+            author="Owner User",
+            owner=self.owner,
+            status="draft",
+            is_visible=False,
+            extraction_status="pending",
+            total_pages=5,
+            price="5.00",
+            category="BOOKS",
+        )
+
+        response = self.client.get(f"/books/{draft_book.id}/read/manifest/")
+        self.assertEqual(response.status_code, 404)
+
+        response = self.client.get(f"/books/{draft_book.id}/read/pages/1/")
+        self.assertEqual(response.status_code, 404)
+
+    def test_guest_preview_with_fewer_than_10_pages(self):
+        """Guest preview should cap at actual page count if book has <10 pages."""
+        small_book = Book.objects.create(
+            title="Small Book",
+            author="Owner User",
+            owner=self.owner,
+            status="published",
+            is_visible=True,
+            extraction_status="completed",
+            total_pages=5,
+            price="5.00",
+            category="BOOKS",
+        )
+
+        for page_number in range(1, 6):
+            BookContent.objects.create(
+                book=small_book,
+                page_number=page_number,
+                version=1,
+                blocks=[
+                    {
+                        "id": f"blk_{page_number}_0",
+                        "type": "paragraph",
+                        "text": f"Page {page_number} text",
+                        "metadata": {
+                            "render_mode": "html",
+                            "render_html": f"<p>Page {page_number} text</p>",
+                        },
+                    }
+                ],
+            )
+
+        response = self.client.get(f"/books/{small_book.id}/read/manifest/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["access_mode"], "preview")
+        self.assertEqual(response.data["available_pages"], 5)
+
+    def test_owner_full_access_unchanged(self):
+        """Owner should still get full access regardless of preview changes."""
+        self.client.force_authenticate(self.owner)
+        response = self.client.get(f"/books/{self.book.id}/read/manifest/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["access_mode"], "owner")
+        self.assertEqual(response.data["available_pages"], 11)
+
+        # Owner can access all pages including page 11+
+        response = self.client.get(f"/books/{self.book.id}/read/pages/11/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["page_number"], 11)
+
+    def test_buyer_full_access_unchanged(self):
+        """Buyer should still get full access regardless of preview changes."""
+        Order.objects.create(
+            buyer=self.buyer,
+            book=self.book,
+            amount=self.book.price,
+            status=Order.STATUS_COMPLETED,
+        )
+        self.client.force_authenticate(self.buyer)
+        response = self.client.get(f"/books/{self.book.id}/read/manifest/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["access_mode"], "full")
+        self.assertEqual(response.data["available_pages"], 11)
+
+        # Buyer can access all pages including page 11+
+        response = self.client.get(f"/books/{self.book.id}/read/pages/11/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["page_number"], 11)
+
+    def test_expired_purchase_still_gets_403(self):
+        """Users with expired purchases should get 403, not preview."""
+        Order.objects.create(
+            buyer=self.buyer,
+            book=self.book,
+            amount=self.book.price,
+            status=Order.STATUS_COMPLETED,
+            expires_at="2020-01-01T00:00:00Z",
+        )
+        self.client.force_authenticate(self.buyer)
+        response = self.client.get(f"/books/{self.book.id}/read/manifest/")
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.data["access_mode"], "expired")
