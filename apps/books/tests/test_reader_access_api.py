@@ -106,7 +106,7 @@ class ReaderAccessApiTests(TestCase):
         created_book = Book.objects.get(id=response.data["id"])
         self.assertEqual(created_book.status, "draft")
 
-    def test_manifest_access_modes_owner_buyer_unauthenticated(self):
+    def test_manifest_access_modes_owner_buyer_unauthenticated_requires_purchase(self):
         # Owner => owner
         self.client.force_authenticate(self.owner)
         response = self.client.get(f"/books/{self.book.id}/read/manifest/")
@@ -125,12 +125,11 @@ class ReaderAccessApiTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["access_mode"], "full")
 
-        # Unauthenticated => preview access (first 10 pages)
+        # Unauthenticated => purchase required
         self.client.force_authenticate(None)
         response = self.client.get(f"/books/{self.book.id}/read/manifest/")
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data["access_mode"], "preview")
-        self.assertEqual(response.data["available_pages"], 10)
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.data["code"], "purchase_required")
 
     def test_reader_cache_is_scoped_by_access(self):
         Order.objects.create(
@@ -150,15 +149,15 @@ class ReaderAccessApiTests(TestCase):
         self.assertEqual(full_page.status_code, 200)
         self.assertEqual(full_page.data["page_number"], 4)
 
-        # Unauthenticated user gets preview access.
+        # Unauthenticated user must not get cached full-access data.
         self.client.force_authenticate(None)
         manifest_resp = self.client.get(f"/books/{self.book.id}/read/manifest/")
-        self.assertEqual(manifest_resp.status_code, 200)
-        self.assertEqual(manifest_resp.data["access_mode"], "preview")
+        self.assertEqual(manifest_resp.status_code, 403)
+        self.assertEqual(manifest_resp.data["code"], "purchase_required")
 
         page_resp = self.client.get(f"/books/{self.book.id}/read/pages/1/")
-        self.assertEqual(page_resp.status_code, 200)
-        self.assertEqual(page_resp.data["page_number"], 1)
+        self.assertEqual(page_resp.status_code, 403)
+        self.assertEqual(page_resp.data["code"], "purchase_required")
 
     def test_purchase_required_for_non_buyer(self):
         non_buyer = User.objects.create_user(
@@ -514,29 +513,17 @@ class ReaderAccessApiTests(TestCase):
         )
         self.assertEqual(response.status_code, 200)
 
-    def test_guest_manifest_returns_preview_access_mode(self):
-        """Guest users should get preview access mode with 10-page cap."""
+    def test_guest_manifest_requires_purchase(self):
+        """Guest users should not get reader manifest access."""
         response = self.client.get(f"/books/{self.book.id}/read/manifest/")
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data["access_mode"], "preview")
-        self.assertEqual(response.data["available_pages"], 10)
-        self.assertEqual(response.data["total_pages"], 11)
-        self.assertTrue(response.data["is_readable"])
-
-    def test_guest_can_access_first_10_pages(self):
-        """Guest users should be able to read pages 1-10."""
-        for page_num in range(1, 11):
-            response = self.client.get(f"/books/{self.book.id}/read/pages/{page_num}/")
-            self.assertEqual(response.status_code, 200)
-            self.assertEqual(response.data["page_number"], page_num)
-            self.assertIn("render_html", response.data)
-
-    def test_guest_blocked_beyond_page_10(self):
-        """Guest users should be blocked from reading page 11+."""
-        response = self.client.get(f"/books/{self.book.id}/read/pages/11/")
         self.assertEqual(response.status_code, 403)
-        self.assertEqual(response.data["code"], "preview_limit_exceeded")
-        self.assertEqual(response.data["access_mode"], "preview")
+        self.assertEqual(response.data["code"], "purchase_required")
+
+    def test_guest_pages_require_purchase(self):
+        """Guest users should not get reader page access."""
+        response = self.client.get(f"/books/{self.book.id}/read/pages/1/")
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.data["code"], "purchase_required")
 
     def test_guest_preview_respects_book_visibility(self):
         """Guest users should not access draft or invisible books."""
@@ -558,8 +545,8 @@ class ReaderAccessApiTests(TestCase):
         response = self.client.get(f"/books/{draft_book.id}/read/pages/1/")
         self.assertEqual(response.status_code, 404)
 
-    def test_guest_preview_with_fewer_than_10_pages(self):
-        """Guest preview should cap at actual page count if book has <10 pages."""
+    def test_guest_manifest_requires_purchase_even_for_small_books(self):
+        """Guest users should still require purchase for shorter books."""
         small_book = Book.objects.create(
             title="Small Book",
             author="Owner User",
@@ -591,9 +578,8 @@ class ReaderAccessApiTests(TestCase):
             )
 
         response = self.client.get(f"/books/{small_book.id}/read/manifest/")
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data["access_mode"], "preview")
-        self.assertEqual(response.data["available_pages"], 5)
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.data["code"], "purchase_required")
 
     def test_owner_full_access_unchanged(self):
         """Owner should still get full access regardless of preview changes."""

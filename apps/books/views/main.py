@@ -587,7 +587,6 @@ class BookViewSet(viewsets.ModelViewSet):
     def read_manifest(self, request, pk=None):
         """
         Reader manifest endpoint — requires purchase or ownership.
-        Allows unauthenticated preview access (first 10 pages) for published+visible books.
         """
         book = self.get_object()
         is_owner = self._is_owner(book, request.user)
@@ -615,6 +614,16 @@ class BookViewSet(viewsets.ModelViewSet):
             )
 
         total_pages = book.content_pages.count() or book.total_pages or 0
+
+        if not request.user.is_authenticated:
+            return Response(
+                {
+                    "code": "purchase_required",
+                    "detail": "Purchase required to read this book.",
+                },
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
         full_access = self._has_full_reader_access(book, request.user)
         expired_order = self._get_expired_order(book, request.user)
         if expired_order is not None:
@@ -626,39 +635,6 @@ class BookViewSet(viewsets.ModelViewSet):
                 },
                 status=status.HTTP_403_FORBIDDEN,
             )
-
-        # Guest preview: allow first 10 pages for published+visible books
-        is_preview = not request.user.is_authenticated
-        if is_preview:
-            preview_pages = min(total_pages, 10)
-            access_bucket = f"preview:{preview_pages}"
-            manifest_cache_key = f"reader:manifest:book:{book.pk}:access:{access_bucket}:v:{self._reader_cache_version(book)}"
-
-            cached_manifest = cache.get(manifest_cache_key)
-            if cached_manifest:
-                return Response(cached_manifest)
-
-            manifest_payload = {
-                "book_id": book.pk,
-                "title": book.title,
-                "author": book.author,
-                "price": f"₾{book.price}",
-                "status": "ready",
-                "extraction_status": book.extraction_status,
-                "total_pages": total_pages,
-                "available_pages": preview_pages,
-                "access_mode": "preview",
-                "is_readable": preview_pages > 0
-                and book.extraction_status in {"completed", "partial"},
-                "page_frame_width": page_frame_width,
-                "page_frame_height": page_frame_height,
-            }
-
-            cache.set(
-                manifest_cache_key, manifest_payload, timeout=self.READER_CACHE_TIMEOUT
-            )
-
-            return Response(manifest_payload)
 
         if not is_owner and not full_access:
             return Response(
@@ -707,7 +683,6 @@ class BookViewSet(viewsets.ModelViewSet):
     def read_page(self, request, pk=None, page_number=None):
         """
         Reader page endpoint — requires purchase or ownership.
-        Allows unauthenticated preview access (first 10 pages) for published+visible books.
         """
         book = self.get_object()
         is_owner = self._is_owner(book, request.user)
@@ -740,14 +715,11 @@ class BookViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Guest preview: allow only first 10 pages
-        is_preview = not request.user.is_authenticated
-        if is_preview and page_number > 10:
+        if not request.user.is_authenticated:
             return Response(
                 {
-                    "code": "preview_limit_exceeded",
-                    "detail": "Preview limited to first 10 pages. Please purchase to continue reading.",
-                    "access_mode": "preview",
+                    "code": "purchase_required",
+                    "detail": "Purchase required to read this book.",
                 },
                 status=status.HTTP_403_FORBIDDEN,
             )
@@ -763,7 +735,7 @@ class BookViewSet(viewsets.ModelViewSet):
                 },
                 status=status.HTTP_403_FORBIDDEN,
             )
-        if not is_owner and not full_access and not is_preview:
+        if not is_owner and not full_access:
             return Response(
                 {
                     "code": "purchase_required",
@@ -773,8 +745,6 @@ class BookViewSet(viewsets.ModelViewSet):
             )
 
         access_bucket = self._reader_access_bucket(is_owner, full_access)
-        if is_preview:
-            access_bucket = "preview"
 
         page = BookContent.objects.filter(book=book, page_number=page_number).first()
         if page is None:
