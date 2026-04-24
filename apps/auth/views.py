@@ -1,6 +1,7 @@
 import logging
 import re
 import secrets
+import uuid
 
 from django.conf import settings
 from django.middleware.csrf import get_token
@@ -13,7 +14,7 @@ from rest_framework.authentication import CSRFCheck
 from rest_framework.views import APIView
 from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.serializers import TokenRefreshSerializer
-from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework_simplejwt.tokens import AccessToken, RefreshToken
 
 from apps.users.models import User
 from apps.users.serializers import UserSerializer
@@ -22,6 +23,7 @@ from .serializers import LoginSerializer, RegisterSerializer
 
 
 logger = logging.getLogger(__name__)
+SESSION_ID_CLAIM = "session_id"
 
 
 def _cookie_secure() -> bool:
@@ -79,6 +81,16 @@ def _clear_auth_cookies(response: Response):
     )
 
 
+def _issue_tokens_for_user(user: User, *, rotate_session: bool = True) -> tuple[str, str]:
+    if rotate_session:
+        user.active_session_id = uuid.uuid4()
+        user.save(update_fields=["active_session_id"])
+
+    refresh = RefreshToken.for_user(user)
+    refresh[SESSION_ID_CLAIM] = str(user.active_session_id)
+    return str(refresh.access_token), str(refresh)
+
+
 class RegisterView(APIView):
     permission_classes = [permissions.AllowAny]
 
@@ -88,9 +100,7 @@ class RegisterView(APIView):
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
 
-        refresh = RefreshToken.for_user(user)
-        access = str(refresh.access_token)
-        refresh_token = str(refresh)
+        access, refresh_token = _issue_tokens_for_user(user)
 
         response = Response({"user": UserSerializer(user, context={"request": request}).data}, status=status.HTTP_201_CREATED)
         _set_auth_cookies(response, access=access, refresh=refresh_token)
@@ -107,11 +117,7 @@ class LoginView(APIView):
         serializer.is_valid(raise_exception=True)
         user = serializer.validated_data["user"]
 
-        # Generate token pair
-        refresh = RefreshToken.for_user(user)
-
-        access = str(refresh.access_token)
-        refresh_token = str(refresh)
+        access, refresh_token = _issue_tokens_for_user(user)
         response = Response({
             "user": UserSerializer(user, context={"request": request}).data,
         }, status=status.HTTP_200_OK)
@@ -130,6 +136,20 @@ class RefreshView(APIView):
             raise DRFValidationError({"detail": "Refresh token missing."})
 
         try:
+            refresh_token = RefreshToken(refresh)
+            user_id = refresh_token.get("user_id")
+            session_id = refresh_token.get(SESSION_ID_CLAIM)
+            user = User.objects.filter(id=user_id, is_active=True).first()
+
+            if not user_id or not session_id or not user or session_id != str(user.active_session_id):
+                logger.warning("Stale or malformed refresh token provided during refresh.")
+                response = Response(
+                    {"detail": "Refresh token is invalid or has been revoked."},
+                    status=status.HTTP_401_UNAUTHORIZED,
+                )
+                _clear_auth_cookies(response)
+                return response
+
             serializer = TokenRefreshSerializer(data={"refresh": refresh})
             serializer.is_valid(raise_exception=True)
         except (TokenError, DRFValidationError):
@@ -151,6 +171,16 @@ class RefreshView(APIView):
 
         access = serializer.validated_data["access"]
         rotated_refresh = serializer.validated_data.get("refresh") or refresh
+
+        access_token = AccessToken(access)
+        if access_token.get(SESSION_ID_CLAIM) != str(user.active_session_id):
+            access_token[SESSION_ID_CLAIM] = str(user.active_session_id)
+            access = str(access_token)
+
+        rotated_refresh_token = RefreshToken(rotated_refresh)
+        if rotated_refresh_token.get(SESSION_ID_CLAIM) != str(user.active_session_id):
+            rotated_refresh_token[SESSION_ID_CLAIM] = str(user.active_session_id)
+            rotated_refresh = str(rotated_refresh_token)
 
         response = Response(status=status.HTTP_200_OK)
         _set_auth_cookies(response, access=access, refresh=rotated_refresh)
@@ -231,12 +261,12 @@ class GoogleLoginView(APIView):
                 user.set_unusable_password()
                 user.save()
 
-        refresh = RefreshToken.for_user(user)
+        access, refresh = _issue_tokens_for_user(user)
         response = Response(
             {"user": UserSerializer(user, context={"request": request}).data},
             status=status.HTTP_200_OK,
         )
-        _set_auth_cookies(response, access=str(refresh.access_token), refresh=str(refresh))
+        _set_auth_cookies(response, access=access, refresh=refresh)
         get_token(request)
         return response
 

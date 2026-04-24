@@ -13,8 +13,13 @@ class CookieJWTAuthentication(JWTAuthentication):
             return None
 
         validated_token = self.get_validated_token(raw_token)
+        user = self.get_user(validated_token)
+        token_session_id = validated_token.get("session_id")
+        if not token_session_id or token_session_id != str(user.active_session_id):
+            raise exceptions.AuthenticationFailed("Session has expired.")
+
         self.enforce_csrf(request)
-        return self.get_user(validated_token), validated_token
+        return user, validated_token
 
     def enforce_csrf(self, request):
         if request.method in ("GET", "HEAD", "OPTIONS", "TRACE"):

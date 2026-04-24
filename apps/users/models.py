@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from unicodedata import normalize
 
 from django.contrib.auth.base_user import AbstractBaseUser, BaseUserManager
@@ -74,6 +75,7 @@ class User(AbstractBaseUser, PermissionsMixin):
     handle = models.CharField(max_length=50)
     handle_normalized = models.CharField(max_length=50, unique=True, db_index=True)
     google_id = models.CharField(max_length=255, unique=True, blank=True, null=True)
+    active_session_id = models.UUIDField(default=uuid.uuid4, editable=False)
     created_at = models.DateTimeField(default=timezone.now)
     updated_at = models.DateTimeField(auto_now=True)
     is_active = models.BooleanField(default=True)

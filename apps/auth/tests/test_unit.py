@@ -11,7 +11,7 @@ from rest_framework.response import Response
 from rest_framework.test import APIRequestFactory, APITestCase
 from rest_framework.views import APIView
 from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken
-from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework_simplejwt.tokens import AccessToken, RefreshToken
 
 from apps.auth.authentication import CookieJWTAuthentication
 from apps.auth.serializers import LoginSerializer, RegisterSerializer
@@ -38,6 +38,16 @@ def attach_csrf(request):
     request.COOKIES[settings.CSRF_COOKIE_NAME] = csrf_token
     request.META["HTTP_X_CSRFTOKEN"] = csrf_token
     return csrf_token
+
+
+def create_session_refresh_token(user):
+    refresh = RefreshToken.for_user(user)
+    refresh["session_id"] = str(user.active_session_id)
+    return refresh
+
+
+def create_session_access_token(user):
+    return create_session_refresh_token(user).access_token
 
 
 class ProtectedWriteView(APIView):
@@ -602,7 +612,7 @@ class TestLogoutView:
 
     def test_logout_blacklist_failure_returns_500(self):
         """Test logout surfaces server-side blacklist failures."""
-        refresh_token = str(RefreshToken.for_user(self.user))
+        refresh_token = str(create_session_refresh_token(self.user))
         request = self.factory.post("/auth/logout")
         attach_csrf(request)
         request.COOKIES[settings.AUTH_REFRESH_COOKIE_NAME] = refresh_token
@@ -658,7 +668,7 @@ class TestRefreshView:
         """Test refresh surfaces unexpected server errors and clears auth cookies."""
         from rest_framework_simplejwt.serializers import TokenRefreshSerializer
 
-        refresh_token = str(RefreshToken.for_user(self.user))
+        refresh_token = str(create_session_refresh_token(self.user))
         request = self.factory.post("/auth/refresh")
         attach_csrf(request)
         request.COOKIES[settings.AUTH_REFRESH_COOKIE_NAME] = refresh_token
@@ -732,7 +742,7 @@ class TestAuthIntegration(APITestCase):
 
     def test_me_endpoint_cookie_authenticated(self):
         """Test /me endpoint with access token cookie."""
-        access = str(RefreshToken.for_user(self.user).access_token)
+        access = str(create_session_access_token(self.user))
         self.client.cookies[settings.AUTH_ACCESS_COOKIE_NAME] = access
 
         url = reverse("auth-me")
@@ -814,6 +824,110 @@ class TestAuthIntegration(APITestCase):
         assert refresh_response.status_code == status.HTTP_200_OK
         assert settings.AUTH_ACCESS_COOKIE_NAME in refresh_response.cookies
 
+    def test_second_login_invalidates_first_access_token(self):
+        csrf_token = self._load_csrf()
+        login_url = reverse("auth-login")
+        login_data = {
+            "email": "integration@example.com",
+            "password": "SecurePass123!",
+        }
+        first_login = self.client.post(login_url, login_data, format="json", HTTP_X_CSRFTOKEN=csrf_token)
+        first_access_token = first_login.cookies[settings.AUTH_ACCESS_COOKIE_NAME].value
+
+        csrf_token = self._load_csrf()
+        self.client.post(login_url, login_data, format="json", HTTP_X_CSRFTOKEN=csrf_token)
+
+        self.client.cookies[settings.AUTH_ACCESS_COOKIE_NAME] = first_access_token
+        me_response = self.client.get(reverse("auth-me"))
+
+        assert me_response.status_code == status.HTTP_401_UNAUTHORIZED
+
+    def test_second_login_invalidates_first_refresh_token(self):
+        csrf_token = self._load_csrf()
+        login_url = reverse("auth-login")
+        login_data = {
+            "email": "integration@example.com",
+            "password": "SecurePass123!",
+        }
+        first_login = self.client.post(login_url, login_data, format="json", HTTP_X_CSRFTOKEN=csrf_token)
+        first_refresh_token = first_login.cookies[settings.AUTH_REFRESH_COOKIE_NAME].value
+
+        csrf_token = self._load_csrf()
+        self.client.post(login_url, login_data, format="json", HTTP_X_CSRFTOKEN=csrf_token)
+
+        csrf_token = self._load_csrf()
+        self.client.cookies[settings.AUTH_REFRESH_COOKIE_NAME] = first_refresh_token
+        refresh_response = self.client.post(reverse("auth-refresh"), {}, format="json", HTTP_X_CSRFTOKEN=csrf_token)
+
+        assert refresh_response.status_code == status.HTTP_401_UNAUTHORIZED
+
+    def test_latest_login_access_token_still_works(self):
+        csrf_token = self._load_csrf()
+        login_url = reverse("auth-login")
+        login_data = {
+            "email": "integration@example.com",
+            "password": "SecurePass123!",
+        }
+        self.client.post(login_url, login_data, format="json", HTTP_X_CSRFTOKEN=csrf_token)
+
+        csrf_token = self._load_csrf()
+        second_login = self.client.post(login_url, login_data, format="json", HTTP_X_CSRFTOKEN=csrf_token)
+        latest_access_token = second_login.cookies[settings.AUTH_ACCESS_COOKIE_NAME].value
+
+        self.client.cookies[settings.AUTH_ACCESS_COOKIE_NAME] = latest_access_token
+        me_response = self.client.get(reverse("auth-me"))
+
+        assert me_response.status_code == status.HTTP_200_OK
+        assert me_response.data["user"]["email"] == "integration@example.com"
+
+    def test_refresh_preserves_current_session_id(self):
+        csrf_token = self._load_csrf()
+        login_url = reverse("auth-login")
+        login_data = {
+            "email": "integration@example.com",
+            "password": "SecurePass123!",
+        }
+        login_response = self.client.post(login_url, login_data, format="json", HTTP_X_CSRFTOKEN=csrf_token)
+
+        user = User.objects.get(email="integration@example.com")
+        current_session_id = str(user.active_session_id)
+
+        csrf_token = self._load_csrf()
+        refresh_url = reverse("auth-refresh")
+        self.client.cookies[settings.AUTH_REFRESH_COOKIE_NAME] = login_response.cookies[settings.AUTH_REFRESH_COOKIE_NAME].value
+        refresh_response = self.client.post(refresh_url, {}, format="json", HTTP_X_CSRFTOKEN=csrf_token)
+
+        access_claims = AccessToken(refresh_response.cookies[settings.AUTH_ACCESS_COOKIE_NAME].value, verify=False)
+        refresh_claims = RefreshToken(refresh_response.cookies[settings.AUTH_REFRESH_COOKIE_NAME].value, verify=False)
+
+        assert refresh_response.status_code == status.HTTP_200_OK
+        assert access_claims["session_id"] == current_session_id
+        assert refresh_claims["session_id"] == current_session_id
+
+    def test_register_token_contains_current_session_id(self):
+        csrf_token = self._load_csrf()
+        register_response = self.client.post(
+            reverse("auth-register"),
+            {
+                "email": "sessionregister@example.com",
+                "password": "SecurePass123!",
+                "firstName": "Session",
+                "lastName": "Register",
+                "handle": "sessionregister",
+            },
+            format="json",
+            HTTP_X_CSRFTOKEN=csrf_token,
+        )
+
+        user = User.objects.get(email="sessionregister@example.com")
+        current_session_id = str(user.active_session_id)
+        access_claims = AccessToken(register_response.cookies[settings.AUTH_ACCESS_COOKIE_NAME].value, verify=False)
+        refresh_claims = RefreshToken(register_response.cookies[settings.AUTH_REFRESH_COOKIE_NAME].value, verify=False)
+
+        assert register_response.status_code == status.HTTP_201_CREATED
+        assert access_claims["session_id"] == current_session_id
+        assert refresh_claims["session_id"] == current_session_id
+
 
 class TestCookieCsrfEnforcement:
     """Integration-style tests for cookie auth + CSRF requirements."""
@@ -830,7 +944,7 @@ class TestCookieCsrfEnforcement:
         )
 
     def test_cookie_auth_rejects_post_without_csrf(self):
-        access = str(RefreshToken.for_user(self.user).access_token)
+        access = str(create_session_access_token(self.user))
         request = self.factory.post("/auth/protected-write", {}, format="json")
         request._dont_enforce_csrf_checks = False
         request.COOKIES[settings.AUTH_ACCESS_COOKIE_NAME] = access
@@ -840,7 +954,7 @@ class TestCookieCsrfEnforcement:
         assert response.status_code == status.HTTP_403_FORBIDDEN
 
     def test_cookie_auth_allows_post_with_csrf(self):
-        access = str(RefreshToken.for_user(self.user).access_token)
+        access = str(create_session_access_token(self.user))
         request = self.factory.post("/auth/protected-write", {}, format="json")
         csrf_token = attach_csrf(request)
         request.COOKIES[settings.AUTH_ACCESS_COOKIE_NAME] = access
