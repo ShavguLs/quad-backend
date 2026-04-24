@@ -67,6 +67,7 @@ class BookViewSet(viewsets.ModelViewSet):
     serializer_class = BookSerializer
     permission_classes = [IsAuthenticatedOrReadOnly, IsOwnerOrReadOnly]
     READER_CACHE_TIMEOUT = max(getattr(settings, "CACHE_DEFAULT_TIMEOUT", 300), 60)
+    PREVIEW_PAGE_LIMIT = 10
     PRIVATE_STORAGE_PREFIXES = (
         "books/files/",
         "draft_elements/images/",
@@ -186,10 +187,19 @@ class BookViewSet(viewsets.ModelViewSet):
         return f"{version_source.isoformat()}:{extraction_source.isoformat()}"
 
     @staticmethod
-    def _reader_access_bucket(is_owner: bool, full_access: bool) -> str:
+    def _reader_access_bucket(
+        is_owner: bool, full_access: bool, is_preview: bool = False
+    ) -> str:
+        if is_preview:
+            return "preview"
         if is_owner:
             return "owner"
         return "full" if full_access else "denied"
+
+    @staticmethod
+    def _is_preview_request(request) -> bool:
+        preview_value = str(request.query_params.get("preview", "")).strip().lower()
+        return preview_value in {"1", "true", "yes", "on"}
 
     def _resolve_reader_html(self, blocks: list[dict]) -> tuple[str, str, str | None]:
         """Resolve a page render payload from stored blocks."""
@@ -659,6 +669,40 @@ class BookViewSet(viewsets.ModelViewSet):
             )
 
         total_pages = book.content_pages.count() or book.total_pages or 0
+        is_preview_request = self._is_preview_request(request)
+
+        if is_preview_request:
+            access_bucket = self._reader_access_bucket(
+                is_owner, full_access=False, is_preview=True
+            )
+            manifest_cache_key = f"reader:manifest:book:{book.pk}:access:{access_bucket}:v:{self._reader_cache_version(book)}"
+
+            cached_manifest = cache.get(manifest_cache_key)
+            if cached_manifest:
+                return Response(cached_manifest)
+
+            available_pages = min(total_pages, self.PREVIEW_PAGE_LIMIT)
+            manifest_payload = {
+                "book_id": book.pk,
+                "title": book.title,
+                "author": book.author,
+                "price": f"₾{book.price}",
+                "status": "ready",
+                "extraction_status": book.extraction_status,
+                "total_pages": total_pages,
+                "available_pages": available_pages,
+                "access_mode": "preview",
+                "is_readable": available_pages > 0
+                and book.extraction_status in {"completed", "partial"},
+                "page_frame_width": page_frame_width,
+                "page_frame_height": page_frame_height,
+            }
+
+            cache.set(
+                manifest_cache_key, manifest_payload, timeout=self.READER_CACHE_TIMEOUT
+            )
+
+            return Response(manifest_payload)
 
         if not request.user.is_authenticated:
             return Response(
@@ -760,7 +804,9 @@ class BookViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        if not request.user.is_authenticated:
+        is_preview_request = self._is_preview_request(request)
+
+        if is_preview_request and page_number > self.PREVIEW_PAGE_LIMIT:
             return Response(
                 {
                     "code": "purchase_required",
@@ -769,18 +815,14 @@ class BookViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        full_access = self._has_full_reader_access(book, request.user)
-        expired_order = self._get_expired_order(book, request.user)
-        if expired_order is not None:
-            return Response(
-                {
-                    "code": "access_expired",
-                    "detail": "Your access to this book has expired.",
-                    "access_mode": "expired",
-                },
-                status=status.HTTP_403_FORBIDDEN,
+        if is_preview_request:
+            access_bucket = self._reader_access_bucket(
+                is_owner, full_access=False, is_preview=True
             )
-        if not is_owner and not full_access:
+        else:
+            access_bucket = None
+
+        if not is_preview_request and not request.user.is_authenticated:
             return Response(
                 {
                     "code": "purchase_required",
@@ -789,7 +831,28 @@ class BookViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        access_bucket = self._reader_access_bucket(is_owner, full_access)
+        if not is_preview_request:
+            full_access = self._has_full_reader_access(book, request.user)
+            expired_order = self._get_expired_order(book, request.user)
+            if expired_order is not None:
+                return Response(
+                    {
+                        "code": "access_expired",
+                        "detail": "Your access to this book has expired.",
+                        "access_mode": "expired",
+                    },
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+            if not is_owner and not full_access:
+                return Response(
+                    {
+                        "code": "purchase_required",
+                        "detail": "Purchase required to read this book.",
+                    },
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+
+            access_bucket = self._reader_access_bucket(is_owner, full_access)
 
         page = BookContent.objects.filter(book=book, page_number=page_number).first()
         if page is None:

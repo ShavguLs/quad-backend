@@ -539,11 +539,74 @@ class ReaderAccessApiTests(TestCase):
             category="BOOKS",
         )
 
-        response = self.client.get(f"/books/{draft_book.id}/read/manifest/")
+        response = self.client.get(f"/books/{draft_book.id}/read/manifest/?preview=1")
         self.assertEqual(response.status_code, 404)
 
-        response = self.client.get(f"/books/{draft_book.id}/read/pages/1/")
+        response = self.client.get(f"/books/{draft_book.id}/read/pages/1/?preview=1")
         self.assertEqual(response.status_code, 404)
+
+    def test_guest_preview_manifest_returns_preview_access(self):
+        response = self.client.get(f"/books/{self.book.id}/read/manifest/?preview=1")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["access_mode"], "preview")
+        self.assertEqual(response.data["total_pages"], 11)
+        self.assertEqual(response.data["available_pages"], 10)
+
+    def test_guest_preview_pages_allow_first_ten_and_block_eleventh(self):
+        response = self.client.get(f"/books/{self.book.id}/read/pages/1/?preview=1")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["page_number"], 1)
+
+        response = self.client.get(f"/books/{self.book.id}/read/pages/10/?preview=1")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["page_number"], 10)
+
+        response = self.client.get(f"/books/{self.book.id}/read/pages/11/?preview=1")
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.data["code"], "purchase_required")
+
+    def test_non_buyer_preview_manifest_and_page_are_available(self):
+        non_buyer = User.objects.create_user(
+            email="nonbuyer_preview@example.com",
+            password="testpass123",
+            first_name="Non",
+            last_name="Buyer",
+            handle="non_buyer_preview",
+        )
+        self.client.force_authenticate(non_buyer)
+
+        manifest_response = self.client.get(
+            f"/books/{self.book.id}/read/manifest/?preview=1"
+        )
+        self.assertEqual(manifest_response.status_code, 200)
+        self.assertEqual(manifest_response.data["access_mode"], "preview")
+        self.assertEqual(manifest_response.data["available_pages"], 10)
+
+        page_response = self.client.get(f"/books/{self.book.id}/read/pages/10/?preview=1")
+        self.assertEqual(page_response.status_code, 200)
+        self.assertEqual(page_response.data["page_number"], 10)
+
+    def test_expired_buyer_preview_manifest_and_page_are_available(self):
+        Order.objects.create(
+            buyer=self.buyer,
+            book=self.book,
+            amount=self.book.price,
+            status=Order.STATUS_COMPLETED,
+            expires_at="2020-01-01T00:00:00Z",
+        )
+        self.client.force_authenticate(self.buyer)
+
+        manifest_response = self.client.get(
+            f"/books/{self.book.id}/read/manifest/?preview=1"
+        )
+        self.assertEqual(manifest_response.status_code, 200)
+        self.assertEqual(manifest_response.data["access_mode"], "preview")
+        self.assertEqual(manifest_response.data["available_pages"], 10)
+
+        page_response = self.client.get(f"/books/{self.book.id}/read/pages/10/?preview=1")
+        self.assertEqual(page_response.status_code, 200)
+        self.assertEqual(page_response.data["page_number"], 10)
 
     def test_guest_manifest_requires_purchase_even_for_small_books(self):
         """Guest users should still require purchase for shorter books."""
