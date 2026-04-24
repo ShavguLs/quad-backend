@@ -366,6 +366,13 @@ class ReviewViewSetTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(len(response.data['results']), 1)
 
+    def test_list_reviews_rejects_invalid_book_filter(self):
+        """Invalid book filters return a validation error instead of a server error."""
+        url = '/reviews/?book=abc'
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(str(response.data['book']), 'Book ID must be a number.')
+
     def test_hidden_reviews_excluded_for_public(self):
         """Hidden reviews are not visible to public users."""
         review = Review.objects.create(

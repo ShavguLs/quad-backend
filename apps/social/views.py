@@ -37,6 +37,10 @@ class ReviewViewSet(viewsets.ModelViewSet):
         # Filter by book if provided
         book_id = self.request.query_params.get('book')
         if book_id:
+            try:
+                book_id = int(book_id)
+            except (TypeError, ValueError) as exc:
+                raise ValidationError({'book': 'Book ID must be a number.'}) from exc
             queryset = queryset.filter(book_id=book_id)
 
         queryset = queryset.annotate(
