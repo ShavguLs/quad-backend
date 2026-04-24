@@ -21,10 +21,11 @@ class ReviewViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticatedOrReadOnly, IsOwnerOrReadOnly]
 
     def get_queryset(self):
-        # Base queryset - exclude hidden reviews for public
+        # Base queryset - exclude hidden reviews for public, only visible books
         queryset = Review.objects.filter(
             book__status="published",
-            is_hidden=False,  # Exclude hidden reviews
+            book__is_visible=True,
+            is_hidden=False,
         ).select_related("book", "user")
         
         # Admin users can see all reviews including hidden

@@ -92,6 +92,49 @@ class BookViewSet(viewsets.ModelViewSet):
             # Anonymous users only see published books
             return queryset.filter(status="published", is_visible=True)
 
+    def list(self, request, *args, **kwargs):
+        """
+        Public catalog listing — always returns only published, visible books.
+
+        Owner drafts are accessible via /me/books/ or the detail endpoint.
+        Supports query parameters:
+        - search: filter by title or author (case-insensitive partial match)
+        - category: filter by exact category
+        - ordering: sort by newest, views, followers, or revenue
+        - page / page_size: standard pagination
+        """
+        queryset = Book.objects.filter(
+            status="published", is_visible=True
+        ).select_related("owner")
+
+        search = request.query_params.get("search", "").strip()
+        if search:
+            queryset = queryset.filter(
+                Q(title__icontains=search) | Q(author__icontains=search)
+            )
+
+        category = request.query_params.get("category", "").strip()
+        if category:
+            queryset = queryset.filter(category__iexact=category)
+
+        ordering_param = request.query_params.get("ordering", "").strip()
+        ordering_map = {
+            "newest": "-created_at",
+            "views": "-view_count",
+            "followers": "-follower_count",
+            "revenue": "-revenue_total",
+        }
+        if ordering_param in ordering_map:
+            queryset = queryset.order_by(ordering_map[ordering_param])
+
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
+
     def perform_create(self, serializer):
         """Assign the current user as the book owner on creation."""
         serializer.save(owner=self.request.user)
