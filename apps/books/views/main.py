@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 Views for the books app.
 """
