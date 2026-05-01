@@ -6,6 +6,7 @@ import pytest
 from decimal import Decimal
 from unittest.mock import Mock, patch
 
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APIClient, APIRequestFactory, APITestCase, force_authenticate
 
@@ -272,6 +273,18 @@ class TestWalletViewSet:
         assert response.status_code == status.HTTP_400_BAD_REQUEST
         assert response.data['error'] == 'Invalid amount'
 
+    def test_deposit_action_rejects_amount_above_limit(self):
+        Wallet.objects.get(user=self.user)
+
+        view = WalletViewSet.as_view({'post': 'deposit'})
+        request = self.factory.post('/wallet/deposit', {'amount': '5000.01'})
+        force_authenticate(request, user=self.user)
+
+        response = view(request)
+
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert response.data['error'] == 'Amount exceeds maximum limit'
+
     def test_deposit_action_float_amount(self):
         """Test deposit works with float amount."""
         with patch('apps.wallet.views.KeepzClient') as mock_client_cls:
@@ -453,6 +466,78 @@ class TestWalletViewSet:
         transaction.refresh_from_db()
         assert wallet.balance == Decimal('0.00')
         assert transaction.status == Transaction.STATUS_FAILED
+
+    def test_callback_reversed_debits_previously_credited_wallet(self):
+        client = APIClient()
+        wallet = Wallet.objects.get(user=self.user)
+        wallet.balance = Decimal('75.00')
+        wallet.save()
+        transaction = Transaction.objects.create(
+            wallet=wallet,
+            type=Transaction.TYPE_DEPOSIT,
+            amount=Decimal('75.00'),
+            status=Transaction.STATUS_COMPLETED,
+            label='Keepz deposit',
+            provider=Transaction.PROVIDER_KEEPZ,
+            provider_order_id='order-reversed',
+            provider_status='SUCCESS',
+            provider_payload={},
+            credited_at=timezone.now(),
+        )
+
+        with patch('apps.wallet.views.KeepzClient') as mock_client_cls:
+            mock_client = Mock()
+            mock_client.get_order_status.return_value = {'status': 'REVERSED'}
+            mock_client_cls.return_value = mock_client
+
+            response = client.post('/wallet/deposit/callback/', {
+                'integratorOrderId': 'order-reversed',
+                'status': 'REVERSED',
+            }, format='json')
+
+        assert response.status_code == status.HTTP_200_OK
+        wallet.refresh_from_db()
+        transaction.refresh_from_db()
+        assert wallet.balance == Decimal('0.00')
+        assert transaction.status == Transaction.STATUS_FAILED
+        assert transaction.provider_status == 'REVERSED'
+        assert transaction.credited_at is None
+
+    def test_deposit_status_refunded_debits_previously_credited_wallet_once(self):
+        client = APIClient()
+        client.force_authenticate(user=self.user)
+        wallet = Wallet.objects.get(user=self.user)
+        wallet.balance = Decimal('40.00')
+        wallet.save()
+        transaction = Transaction.objects.create(
+            wallet=wallet,
+            type=Transaction.TYPE_DEPOSIT,
+            amount=Decimal('40.00'),
+            status=Transaction.STATUS_COMPLETED,
+            label='Keepz deposit',
+            provider=Transaction.PROVIDER_KEEPZ,
+            provider_order_id='order-refunded',
+            provider_status='SUCCESS',
+            provider_payload={},
+            credited_at=timezone.now(),
+        )
+
+        with patch('apps.wallet.views.KeepzClient') as mock_client_cls:
+            mock_client = Mock()
+            mock_client.get_order_status.return_value = {'status': 'REFUNDED_BY_KEEPZ'}
+            mock_client_cls.return_value = mock_client
+
+            response = client.get('/wallet/deposit/status/', {'order_id': 'order-refunded'})
+            duplicate = client.get('/wallet/deposit/status/', {'order_id': 'order-refunded'})
+
+        assert response.status_code == status.HTTP_200_OK
+        assert duplicate.status_code == status.HTTP_200_OK
+        wallet.refresh_from_db()
+        transaction.refresh_from_db()
+        assert wallet.balance == Decimal('0.00')
+        assert transaction.status == Transaction.STATUS_FAILED
+        assert transaction.provider_status == 'REFUNDED_BY_KEEPZ'
+        assert transaction.credited_at is None
 
     def test_callback_spoofed_success_status_does_not_credit_wallet(self):
         client = APIClient()
@@ -773,6 +858,151 @@ class TestWalletViewSet:
 
         assert response.status_code == status.HTTP_502_BAD_GATEWAY
         assert 'error' in response.data
+
+
+    def test_callback_partially_refunded_does_not_debit_wallet(self):
+        client = APIClient()
+        wallet = Wallet.objects.get(user=self.user)
+        wallet.balance = Decimal('75.00')
+        wallet.save()
+        transaction = Transaction.objects.create(
+            wallet=wallet,
+            type=Transaction.TYPE_DEPOSIT,
+            amount=Decimal('75.00'),
+            status=Transaction.STATUS_COMPLETED,
+            label='Keepz deposit',
+            provider=Transaction.PROVIDER_KEEPZ,
+            provider_order_id='order-partial-refund',
+            provider_status='SUCCESS',
+            provider_payload={},
+            credited_at=timezone.now(),
+        )
+
+        with patch('apps.wallet.views.KeepzClient') as mock_client_cls:
+            mock_client = Mock()
+            mock_client.get_order_status.return_value = {'status': 'PARTIALLY_REFUNDED'}
+            mock_client_cls.return_value = mock_client
+
+            response = client.post('/wallet/deposit/callback/', {
+                'integratorOrderId': 'order-partial-refund',
+                'status': 'PARTIALLY_REFUNDED',
+            }, format='json')
+
+        assert response.status_code == status.HTTP_200_OK
+        wallet.refresh_from_db()
+        transaction.refresh_from_db()
+        assert wallet.balance == Decimal('75.00')
+        assert transaction.status == Transaction.STATUS_PENDING
+        assert transaction.provider_status == 'PARTIALLY_REFUNDED'
+        assert transaction.credited_at is not None
+
+    def test_callback_refund_requested_does_not_debit_wallet(self):
+        client = APIClient()
+        wallet = Wallet.objects.get(user=self.user)
+        wallet.balance = Decimal('60.00')
+        wallet.save()
+        transaction = Transaction.objects.create(
+            wallet=wallet,
+            type=Transaction.TYPE_DEPOSIT,
+            amount=Decimal('60.00'),
+            status=Transaction.STATUS_COMPLETED,
+            label='Keepz deposit',
+            provider=Transaction.PROVIDER_KEEPZ,
+            provider_order_id='order-refund-requested',
+            provider_status='SUCCESS',
+            provider_payload={},
+            credited_at=timezone.now(),
+        )
+
+        with patch('apps.wallet.views.KeepzClient') as mock_client_cls:
+            mock_client = Mock()
+            mock_client.get_order_status.return_value = {'status': 'REFUND_REQUESTED'}
+            mock_client_cls.return_value = mock_client
+
+            response = client.post('/wallet/deposit/callback/', {
+                'integratorOrderId': 'order-refund-requested',
+                'status': 'REFUND_REQUESTED',
+            }, format='json')
+
+        assert response.status_code == status.HTTP_200_OK
+        wallet.refresh_from_db()
+        transaction.refresh_from_db()
+        assert wallet.balance == Decimal('60.00')
+        assert transaction.status == Transaction.STATUS_PENDING
+        assert transaction.provider_status == 'REFUND_REQUESTED'
+        assert transaction.credited_at is not None
+
+    def test_callback_refund_failed_preserves_credited_balance(self):
+        client = APIClient()
+        wallet = Wallet.objects.get(user=self.user)
+        wallet.balance = Decimal('50.00')
+        wallet.save()
+        transaction = Transaction.objects.create(
+            wallet=wallet,
+            type=Transaction.TYPE_DEPOSIT,
+            amount=Decimal('50.00'),
+            status=Transaction.STATUS_COMPLETED,
+            label='Keepz deposit',
+            provider=Transaction.PROVIDER_KEEPZ,
+            provider_order_id='order-refund-failed',
+            provider_status='SUCCESS',
+            provider_payload={},
+            credited_at=timezone.now(),
+        )
+
+        with patch('apps.wallet.views.KeepzClient') as mock_client_cls:
+            mock_client = Mock()
+            mock_client.get_order_status.return_value = {'status': 'REFUNDED_FAILED'}
+            mock_client_cls.return_value = mock_client
+
+            response = client.post('/wallet/deposit/callback/', {
+                'integratorOrderId': 'order-refund-failed',
+                'status': 'REFUNDED_FAILED',
+            }, format='json')
+
+        assert response.status_code == status.HTTP_200_OK
+        wallet.refresh_from_db()
+        transaction.refresh_from_db()
+        assert wallet.balance == Decimal('50.00')
+        assert transaction.status == Transaction.STATUS_COMPLETED
+        assert transaction.provider_status == 'REFUNDED_FAILED'
+        assert transaction.credited_at is not None
+
+    def test_callback_full_reversal_by_operator_debits_wallet(self):
+        client = APIClient()
+        wallet = Wallet.objects.get(user=self.user)
+        wallet.balance = Decimal('80.00')
+        wallet.save()
+        transaction = Transaction.objects.create(
+            wallet=wallet,
+            type=Transaction.TYPE_DEPOSIT,
+            amount=Decimal('80.00'),
+            status=Transaction.STATUS_COMPLETED,
+            label='Keepz deposit',
+            provider=Transaction.PROVIDER_KEEPZ,
+            provider_order_id='order-rev-operator',
+            provider_status='SUCCESS',
+            provider_payload={},
+            credited_at=timezone.now(),
+        )
+
+        with patch('apps.wallet.views.KeepzClient') as mock_client_cls:
+            mock_client = Mock()
+            mock_client.get_order_status.return_value = {'status': 'REFUNDED_BY_OPERATOR'}
+            mock_client_cls.return_value = mock_client
+
+            response = client.post('/wallet/deposit/callback/', {
+                'integratorOrderId': 'order-rev-operator',
+                'status': 'REFUNDED_BY_OPERATOR',
+            }, format='json')
+
+        assert response.status_code == status.HTTP_200_OK
+        wallet.refresh_from_db()
+        transaction.refresh_from_db()
+        assert wallet.balance == Decimal('0.00')
+        assert transaction.status == Transaction.STATUS_FAILED
+        assert transaction.provider_status == 'REFUNDED_BY_OPERATOR'
+        assert transaction.credited_at is None
 
 
 class TestWalletViewSetIntegration(APITestCase):

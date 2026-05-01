@@ -66,6 +66,13 @@ def build_book_slug(author: str, title: str, max_length: int = 255) -> str:
 class Book(BookThemeMixin, models.Model):
     """Book model with ownership, status tracking, and metadata."""
 
+    ACCESS_TYPE_EDUCATIONAL = "educational"
+    ACCESS_TYPE_SCIENTIFIC = "scientific"
+    ACCESS_TYPE_CHOICES = [
+        (ACCESS_TYPE_EDUCATIONAL, "სასწავლო"),
+        (ACCESS_TYPE_SCIENTIFIC, "სამეცნიერო"),
+    ]
+
     RENDER_PREFERENCE_TEXT = "text"
     RENDER_PREFERENCE_EXACT_VISUAL = "exact_visual"
     READER_RENDER_PREFERENCE_CHOICES = [
@@ -118,6 +125,12 @@ class Book(BookThemeMixin, models.Model):
         default=0.00,
         validators=[MinValueValidator(0)],
         help_text="Price in GBP",
+    )
+    access_type = models.CharField(
+        max_length=20,
+        choices=ACCESS_TYPE_CHOICES,
+        default=ACCESS_TYPE_EDUCATIONAL,
+        help_text="Book access and download policy",
     )
     # Analytics fields
     view_count = models.PositiveIntegerField(default=0)
@@ -295,6 +308,12 @@ class BookFile(models.Model):
     file = models.FileField(
         storage=PrivateMediaStorage(),
         upload_to="books/files/%Y/%m/",
+    )
+    preview_file = models.FileField(
+        storage=PrivateMediaStorage(),
+        upload_to="books/previews/%Y/%m/",
+        blank=True,
+        null=True,
     )
     original_filename = models.CharField(max_length=255)
     file_size = models.PositiveIntegerField()

@@ -71,12 +71,16 @@ class OrderViewSet(viewsets.ModelViewSet):
             )
 
         try:
+            expires_at = None
+            if book.access_type == Book.ACCESS_TYPE_EDUCATIONAL:
+                expires_at = timezone.now() + timedelta(days=180)
+
             order = Order.objects.create(
                 buyer=buyer,
                 book=book,
                 amount=book.price,
                 status=Order.STATUS_COMPLETED,
-                expires_at=timezone.now() + timedelta(days=180)
+                expires_at=expires_at
             )
         except IntegrityError:
             transaction.set_rollback(True)

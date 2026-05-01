@@ -4,17 +4,16 @@ from __future__ import annotations
 Views for the books app.
 """
 
-import base64
-import html
+import io
 import logging
-import mimetypes
-import re
 
 from django.conf import settings
 from django.core.cache import cache
 from django.core.exceptions import ValidationError
+from django.core.files.base import ContentFile
 from django.db import IntegrityError, transaction
 from django.db.models import F, Q
+from django.http import FileResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import status, viewsets
@@ -24,7 +23,6 @@ from rest_framework.response import Response
 
 from apps.books.models import (
     Book,
-    BookContent,
     BookFile,
     BookFollow,
     BookView,
@@ -34,7 +32,6 @@ from apps.books.models import (
 )
 from apps.books.permissions import IsOwnerOrReadOnly
 from apps.books.audit import service as audit_service
-from apps.books.storage import PrivateMediaStorage
 from apps.books.serializers import (
     BookAuditLogSerializer,
     BookFileSerializer,
@@ -66,13 +63,8 @@ class BookViewSet(viewsets.ModelViewSet):
     queryset = Book.objects.all()
     serializer_class = BookSerializer
     permission_classes = [IsAuthenticatedOrReadOnly, IsOwnerOrReadOnly]
-    READER_CACHE_TIMEOUT = max(getattr(settings, "CACHE_DEFAULT_TIMEOUT", 300), 60)
+    WATERMARK_CACHE_TIMEOUT = max(getattr(settings, "CACHE_DEFAULT_TIMEOUT", 300), 60 * 60 * 24)
     PREVIEW_PAGE_LIMIT = 10
-    PRIVATE_STORAGE_PREFIXES = (
-        "books/files/",
-        "draft_elements/images/",
-        "extracted_images/",
-    )
 
     def get_queryset(self):
         """
@@ -157,14 +149,20 @@ class BookViewSet(viewsets.ModelViewSet):
     def _has_completed_purchase(book: Book, user) -> bool:
         if not user or not user.is_authenticated:
             return False
-        order = Order.objects.filter(
-            buyer=user, book=book, status=Order.STATUS_COMPLETED
-        ).first()
+        order = BookViewSet._get_completed_order(book, user)
         if order is None:
             return False
         if order.expires_at is not None and order.expires_at <= timezone.now():
             return False
         return True
+
+    @staticmethod
+    def _get_completed_order(book: Book, user) -> Order | None:
+        if not user or not user.is_authenticated:
+            return None
+        return Order.objects.filter(
+            buyer=user, book=book, status=Order.STATUS_COMPLETED
+        ).order_by("-created_at").first()
 
     def _get_expired_order(self, book: Book, user) -> Order | None:
         """Get the expired order if user has a completed but expired purchase."""
@@ -181,257 +179,144 @@ class BookViewSet(viewsets.ModelViewSet):
         return self._is_owner(book, user) or self._has_completed_purchase(book, user)
 
     @staticmethod
-    def _reader_cache_version(book: Book) -> str:
-        version_source = book.updated_at or timezone.now()
-        extraction_source = book.extraction_updated_at or version_source
-        return f"{version_source.isoformat()}:{extraction_source.isoformat()}"
+    def _access_label(book: Book) -> str:
+        return dict(Book.ACCESS_TYPE_CHOICES).get(book.access_type, "სასწავლო")
 
     @staticmethod
-    def _reader_access_bucket(
-        is_owner: bool, full_access: bool, is_preview: bool = False
-    ) -> str:
-        if is_preview:
-            return "preview"
-        if is_owner:
-            return "owner"
-        return "full" if full_access else "denied"
+    def _latest_source_file(book: Book) -> BookFile | None:
+        return book.files.order_by("-uploaded_at").first()
+
+    def _build_reader_url(self, request, book: Book, endpoint: str, preview: bool = False) -> str:
+        base_path = request.path.split("/read/", 1)[0].rstrip("/")
+        url = request.build_absolute_uri(f"{base_path}/read/{endpoint}/")
+        if preview:
+            return f"{url}?preview=1"
+        return url
+
+    def _reader_access_state(self, book: Book, user) -> tuple[str, bool, bool, Order | None]:
+        if self._is_owner(book, user):
+            return "ready", True, True, None
+
+        order = self._get_completed_order(book, user)
+        if order is None:
+            return "purchase_required", False, False, None
+
+        if order.expires_at is not None and order.expires_at <= timezone.now():
+            return "expired", False, False, order
+
+        can_download = book.access_type == Book.ACCESS_TYPE_SCIENTIFIC
+        return "ready", True, can_download, order
+
+    def _reader_access_payload(self, request, book: Book, mode: str, state: str, can_read: bool, can_download: bool, expires_at, document_url: str | None, download_url: str | None):
+        return {
+            "book_id": book.pk,
+            "title": book.title,
+            "author": book.author,
+            "access_type": book.access_type,
+            "access_label": self._access_label(book),
+            "mode": mode,
+            "status": state,
+            "can_read": can_read,
+            "can_download": can_download,
+            "expires_at": expires_at.isoformat() if expires_at else None,
+            "preview_pages": self.PREVIEW_PAGE_LIMIT,
+            "document_url": document_url,
+            "download_url": download_url,
+        }
+
+    def _ensure_preview_file(self, book_file: BookFile) -> bool:
+        if book_file.preview_file:
+            return True
+
+        try:
+            import fitz
+
+            with book_file.file.open("rb") as source:
+                source_bytes = source.read()
+
+            source_doc = fitz.open(stream=source_bytes, filetype="pdf")
+            if source_doc.page_count <= 0:
+                source_doc.close()
+                return False
+            preview_doc = fitz.open()
+            preview_doc.insert_pdf(source_doc, from_page=0, to_page=min(source_doc.page_count, self.PREVIEW_PAGE_LIMIT) - 1)
+            output = preview_doc.tobytes(garbage=4, deflate=True)
+            preview_doc.close()
+            source_doc.close()
+
+            filename = f"book-{book_file.book_id}-preview.pdf"
+            book_file.preview_file.save(filename, ContentFile(output), save=True)
+            return True
+        except Exception:
+            logger.exception("Failed to generate preview PDF for book file %s", book_file.pk)
+            return False
+
+    def _source_pdf_response(self, book_file: BookFile, filename: str, as_attachment: bool = False):
+        file_handle = book_file.file.open("rb")
+        return FileResponse(file_handle, content_type="application/pdf", as_attachment=as_attachment, filename=filename)
+
+    def _preview_pdf_response(self, book_file: BookFile):
+        if not self._ensure_preview_file(book_file) or not book_file.preview_file:
+            return Response(
+                {"code": "preview_not_ready", "detail": "Preview is not ready."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        file_handle = book_file.preview_file.open("rb")
+        return FileResponse(file_handle, content_type="application/pdf", filename=f"{book_file.book.slug or book_file.book_id}-preview.pdf")
+
+    def _watermarked_pdf_response(self, book: Book, book_file: BookFile, order: Order, user):
+        try:
+            import fitz
+
+            buyer_label = getattr(user, "email", None) or getattr(user, "handle", None) or str(user.pk)
+            cache_key = (
+                f"reader:watermark:book:{book.pk}:order:{order.pk}:buyer:{user.pk}:"
+                f"source:{book_file.pk}:{book_file.uploaded_at.isoformat()}:{book_file.file_size}"
+            )
+            cached_output = cache.get(cache_key)
+
+            if cached_output is None:
+                with book_file.file.open("rb") as source:
+                    source_bytes = source.read()
+
+                doc = fitz.open(stream=source_bytes, filetype="pdf")
+                watermark = f"Quaduni | {buyer_label} | Order {order.pk} | {book.title} | {order.created_at.date().isoformat()}"
+                for page in doc:
+                    rect = page.rect
+                    positions = [
+                        (36, max(48, rect.height * 0.18)),
+                        (max(36, rect.width * 0.18), rect.height * 0.42),
+                        (36, rect.height * 0.66),
+                        (max(36, rect.width * 0.18), rect.height * 0.9),
+                    ]
+                    for position in positions:
+                        page.insert_text(
+                            position,
+                            watermark,
+                            fontsize=18,
+                            color=(0.68, 0.68, 0.68),
+                            overlay=True,
+                        )
+
+                cached_output = doc.tobytes(garbage=4, deflate=True)
+                doc.close()
+                cache.set(cache_key, cached_output, timeout=self.WATERMARK_CACHE_TIMEOUT)
+
+            output = io.BytesIO(cached_output)
+            output.seek(0)
+            filename = f"{book.slug or book.pk}-watermarked.pdf"
+            return FileResponse(output, content_type="application/pdf", as_attachment=True, filename=filename)
+        except Exception:
+            logger.exception("Failed to generate watermarked download for book %s order %s", book.pk, order.pk)
+            return Response(
+                {"code": "download_not_ready", "detail": "Download is not ready."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
 
     @staticmethod
     def _is_preview_request(request) -> bool:
         preview_value = str(request.query_params.get("preview", "")).strip().lower()
         return preview_value in {"1", "true", "yes", "on"}
-
-    def _resolve_reader_html(self, blocks: list[dict]) -> tuple[str, str, str | None]:
-        """Resolve a page render payload from stored blocks."""
-        # Prefer explicit render payload written by extraction.
-        for block in blocks:
-            metadata = (block or {}).get("metadata") or {}
-            render_html = metadata.get("render_html")
-            if render_html:
-                return (
-                    metadata.get("render_mode", "html"),
-                    self._redact_private_urls_in_html(render_html),
-                    metadata.get("fallback_image_path"),
-                )
-
-        # Fallback: synthesize basic HTML from structured blocks.
-        html_parts: list[str] = []
-        for block in blocks:
-            block_type = block.get("type")
-            text_value = block.get("text") or block.get("content") or ""
-            text_html = html.escape(str(text_value))
-            formatting = block.get("formatting") or {}
-            styles: list[str] = []
-
-            alignment = formatting.get("alignment")
-            if (
-                alignment in {"left", "center", "right", "justify"}
-                and alignment != "left"
-            ):
-                styles.append(f"text-align:{alignment}")
-            font_size = formatting.get("font_size")
-            if isinstance(font_size, (int, float)) and font_size > 0:
-                styles.append(f"font-size:{float(font_size):.1f}px")
-            font_family = formatting.get("font_family")
-            if font_family:
-                styles.append(f"font-family:{font_family}")
-            color = formatting.get("color")
-            if color:
-                styles.append(f"color:{color}")
-            line_height = formatting.get("line_height")
-            if isinstance(line_height, (int, float)) and line_height > 0:
-                styles.append(f"line-height:{float(line_height):.2f}")
-
-            if formatting.get("bold"):
-                text_html = f"<strong>{text_html}</strong>"
-            if formatting.get("italic"):
-                text_html = f"<em>{text_html}</em>"
-
-            style_attr = f' style="{";".join(styles)}"' if styles else ""
-
-            if block_type == "heading":
-                level = 1
-                raw_level = block.get("level") or (block.get("attrs") or {}).get(
-                    "level"
-                )
-                if isinstance(raw_level, int) and 1 <= raw_level <= 6:
-                    level = raw_level
-                html_parts.append(f"<h{level}{style_attr}>{text_html}</h{level}>")
-            elif block_type == "list_item":
-                list_type = (block.get("attrs") or {}).get("list_type", "unordered")
-                marker = "•"
-                if list_type == "ordered":
-                    marker = f"{(block.get('attrs') or {}).get('list_index', 1)}."
-                html_parts.append(f"<p{style_attr}>{marker} {text_html}</p>")
-            else:
-                html_parts.append(f"<p{style_attr}>{text_html}</p>")
-
-        if not html_parts:
-            return ("html", "<p></p>", None)
-        return ("html", self._redact_private_urls_in_html("\n".join(html_parts)), None)
-
-    @classmethod
-    def _contains_private_storage_prefix(cls, value: str) -> bool:
-        lowered = value.lower()
-        return any(prefix in lowered for prefix in cls.PRIVATE_STORAGE_PREFIXES)
-
-    @classmethod
-    def _looks_like_storage_reference(cls, value: str) -> bool:
-        normalized = value.strip().lower()
-        if not normalized:
-            return False
-        starts_like_ref = normalized.startswith(("http://", "https://", "/"))
-        return starts_like_ref or any(
-            normalized.startswith(prefix) for prefix in cls.PRIVATE_STORAGE_PREFIXES
-        )
-
-    @classmethod
-    def _redact_private_urls_in_html(cls, html_value: str) -> str:
-        if not isinstance(html_value, str) or not cls._contains_private_storage_prefix(
-            html_value
-        ):
-            return html_value
-
-        absolute_url_pattern = re.compile(
-            r"https?://[^\s\"'<>]*(?:books/files/|draft_elements/images/|extracted_images/)[^\s\"'<>]*",
-            flags=re.IGNORECASE,
-        )
-        relative_path_pattern = re.compile(
-            r"(?:/)?(?:books/files|draft_elements/images|extracted_images)/[^\s\"'<>]*",
-            flags=re.IGNORECASE,
-        )
-        redacted = absolute_url_pattern.sub("#", html_value)
-        return relative_path_pattern.sub("#", redacted)
-
-    @classmethod
-    def _sanitize_private_storage_references(cls, value):
-        if isinstance(value, dict):
-            return {
-                key: cls._sanitize_private_storage_references(nested_value)
-                for key, nested_value in value.items()
-            }
-
-        if isinstance(value, list):
-            return [cls._sanitize_private_storage_references(item) for item in value]
-
-        if isinstance(value, str) and cls._contains_private_storage_prefix(value):
-            if cls._looks_like_storage_reference(value):
-                return None
-            return cls._redact_private_urls_in_html(value)
-
-        return value
-
-    @staticmethod
-    def _extract_page_dimensions(blocks: list[dict]) -> tuple[float, float] | None:
-        """Extract per-page dimensions from stored reader metadata."""
-        for block in blocks or []:
-            metadata = (block or {}).get("metadata") or {}
-            raw_width = metadata.get("page_width")
-            raw_height = metadata.get("page_height")
-            try:
-                page_width = float(raw_width)
-                page_height = float(raw_height)
-            except (TypeError, ValueError):
-                continue
-
-            if page_width > 0 and page_height > 0:
-                return (page_width, page_height)
-
-        return None
-
-    def _resolve_reader_page_frame(self, book: Book) -> tuple[float, float]:
-        """
-        Choose a single frame for all pages using the tallest extracted page.
-
-        The frame width is the width associated with the tallest page found
-        across all BookContent records for this book.  When multiple pages
-        share the same maximum height, the widest of those pages is used.
-        If no valid dimensions exist the method falls back to (595.0, 842.0)
-        (ISO A4 in PDF points).
-
-        Returns (page_frame_width, page_frame_height) in PDF point units.
-        """
-        default_width = 595.0
-        default_height = 842.0
-        max_height = 0.0
-        width_for_max_height = 0.0
-
-        pages = BookContent.objects.filter(book=book).only("blocks")
-        for page in pages:
-            dimensions = self._extract_page_dimensions(page.blocks or [])
-            if not dimensions:
-                continue
-
-            page_width, page_height = dimensions
-            if page_height > max_height:
-                max_height = page_height
-                width_for_max_height = page_width
-            elif page_height == max_height and page_width > width_for_max_height:
-                width_for_max_height = page_width
-
-        if max_height <= 0 or width_for_max_height <= 0:
-            return (default_width, default_height)
-
-        return (width_for_max_height, max_height)
-
-    @staticmethod
-    def _fallback_image_data_uri(fallback_image_path: str | None) -> str | None:
-        if not fallback_image_path:
-            return None
-        storage = PrivateMediaStorage()
-        try:
-            with storage.open(fallback_image_path, "rb") as fh:
-                raw = fh.read()
-            mime, _ = mimetypes.guess_type(fallback_image_path)
-            mime = mime or "image/jpeg"
-            return f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
-        except Exception:
-            logger.exception(
-                "Failed to load fallback image data URI for path: %s",
-                fallback_image_path,
-            )
-            return None
-
-    def _queue_backfill_if_needed(self, book_id: int) -> bool:
-        """
-        Queue async extraction if content is missing but a source file exists.
-        Returns True if extraction is queued or already processing.
-        """
-        from apps.books.tasks import process_book_upload_task
-
-        with transaction.atomic():
-            locked = Book.objects.select_for_update().get(pk=book_id)
-            if locked.content_pages.exists():
-                return False
-
-            latest_file = locked.files.order_by("-uploaded_at").first()
-            if latest_file is None:
-                return False
-
-            if locked.extraction_status == "processing":
-                return True
-
-            now = timezone.now()
-            locked.extraction_status = "processing"
-            locked.extraction_error = None
-            locked.extraction_started_at = now
-            locked.extraction_updated_at = now
-            locked.extraction_finished_at = None
-            locked.is_visible = False
-            locked.save(
-                update_fields=[
-                    "extraction_status",
-                    "extraction_error",
-                    "extraction_started_at",
-                    "extraction_updated_at",
-                    "extraction_finished_at",
-                    "is_visible",
-                    "updated_at",
-                ]
-            )
-
-            process_book_upload_task.delay(locked.pk)
-            return True
 
     def retrieve(self, request, *args, **kwargs):
         book = self.get_object()
@@ -636,261 +521,132 @@ class BookViewSet(viewsets.ModelViewSet):
     @action(
         detail=True,
         methods=["get"],
-        url_path="read/manifest",
+        url_path="read/access",
         permission_classes=[IsAuthenticatedOrReadOnly],
     )
-    def read_manifest(self, request, pk=None):
-        """
-        Reader manifest endpoint — requires purchase or ownership.
-        """
+    def read_access(self, request, pk=None):
+        """Return PDF reader access state for the external reader app."""
         book = self.get_object()
+        is_preview_request = self._is_preview_request(request)
         is_owner = self._is_owner(book, request.user)
 
         if not is_owner and (book.status != "published" or not book.is_visible):
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        queued_backfill = self._queue_backfill_if_needed(book.pk)
-        book.refresh_from_db()
-        page_frame_width, page_frame_height = self._resolve_reader_page_frame(book)
-
-        if queued_backfill or book.extraction_status == "processing":
+        latest_file = self._latest_source_file(book)
+        if latest_file is None:
             return Response(
-                {
-                    "book_id": book.pk,
-                    "status": "processing",
-                    "extraction_status": book.extraction_status,
-                    "total_pages": book.total_pages or 0,
-                    "access_mode": "processing",
-                    "is_readable": False,
-                    "page_frame_width": page_frame_width,
-                    "page_frame_height": page_frame_height,
-                },
+                self._reader_access_payload(
+                    request,
+                    book,
+                    "preview" if is_preview_request else "full",
+                    "processing",
+                    False,
+                    False,
+                    None,
+                    None,
+                    None,
+                ),
                 status=status.HTTP_202_ACCEPTED,
             )
 
-        total_pages = book.content_pages.count() or book.total_pages or 0
-        is_preview_request = self._is_preview_request(request)
-
         if is_preview_request:
-            access_bucket = self._reader_access_bucket(
-                is_owner, full_access=False, is_preview=True
-            )
-            manifest_cache_key = f"reader:manifest:book:{book.pk}:access:{access_bucket}:v:{self._reader_cache_version(book)}"
-
-            cached_manifest = cache.get(manifest_cache_key)
-            if cached_manifest:
-                return Response(cached_manifest)
-
-            available_pages = min(total_pages, self.PREVIEW_PAGE_LIMIT)
-            manifest_payload = {
-                "book_id": book.pk,
-                "title": book.title,
-                "author": book.author,
-                "price": f"₾{book.price}",
-                "status": "ready",
-                "extraction_status": book.extraction_status,
-                "total_pages": total_pages,
-                "available_pages": available_pages,
-                "access_mode": "preview",
-                "is_readable": available_pages > 0
-                and book.extraction_status in {"completed", "partial"},
-                "page_frame_width": page_frame_width,
-                "page_frame_height": page_frame_height,
-            }
-
-            cache.set(
-                manifest_cache_key, manifest_payload, timeout=self.READER_CACHE_TIMEOUT
-            )
-
-            return Response(manifest_payload)
-
-        if not request.user.is_authenticated:
             return Response(
-                {
-                    "code": "purchase_required",
-                    "detail": "Purchase required to read this book.",
-                },
-                status=status.HTTP_403_FORBIDDEN,
+                self._reader_access_payload(
+                    request,
+                    book,
+                    "preview",
+                    "ready",
+                    True,
+                    False,
+                    None,
+                    self._build_reader_url(request, book, "document", preview=True),
+                    None,
+                )
             )
 
-        full_access = self._has_full_reader_access(book, request.user)
-        expired_order = self._get_expired_order(book, request.user)
-        if expired_order is not None:
-            return Response(
-                {
-                    "code": "access_expired",
-                    "detail": "Your access to this book has expired. Please renew to continue reading.",
-                    "access_mode": "expired",
-                },
-                status=status.HTTP_403_FORBIDDEN,
+        state, can_read, can_download, order = self._reader_access_state(book, request.user)
+        expires_at = order.expires_at if order else None
+        document_url = self._build_reader_url(request, book, "document") if can_read else None
+        download_url = self._build_reader_url(request, book, "download") if can_download else None
+        return Response(
+            self._reader_access_payload(
+                request,
+                book,
+                "full",
+                state,
+                can_read,
+                can_download,
+                expires_at,
+                document_url,
+                download_url,
             )
-
-        if not is_owner and not full_access:
-            return Response(
-                {
-                    "code": "purchase_required",
-                    "detail": "Purchase required to read this book.",
-                },
-                status=status.HTTP_403_FORBIDDEN,
-            )
-        access_mode = "owner" if is_owner else "full"
-        access_bucket = self._reader_access_bucket(is_owner, full_access)
-        manifest_cache_key = f"reader:manifest:book:{book.pk}:access:{access_bucket}:v:{self._reader_cache_version(book)}"
-
-        cached_manifest = cache.get(manifest_cache_key)
-        if cached_manifest:
-            return Response(cached_manifest)
-
-        manifest_payload = {
-            "book_id": book.pk,
-            "title": book.title,
-            "author": book.author,
-            "price": f"₾{book.price}",
-            "status": "ready",
-            "extraction_status": book.extraction_status,
-            "total_pages": total_pages,
-            "available_pages": total_pages,
-            "access_mode": access_mode,
-            "is_readable": total_pages > 0
-            and book.extraction_status in {"completed", "partial"},
-            "page_frame_width": page_frame_width,
-            "page_frame_height": page_frame_height,
-        }
-
-        cache.set(
-            manifest_cache_key, manifest_payload, timeout=self.READER_CACHE_TIMEOUT
         )
-
-        return Response(manifest_payload)
 
     @action(
         detail=True,
         methods=["get"],
-        url_path=r"read/pages/(?P<page_number>\d+)",
+        url_path="read/document",
         permission_classes=[IsAuthenticatedOrReadOnly],
     )
-    def read_page(self, request, pk=None, page_number=None):
-        """
-        Reader page endpoint — requires purchase or ownership.
-        """
+    def read_document(self, request, pk=None):
+        """Serve the private PDF document after reader access checks."""
         book = self.get_object()
+        is_preview_request = self._is_preview_request(request)
         is_owner = self._is_owner(book, request.user)
 
         if not is_owner and (book.status != "published" or not book.is_visible):
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        queued_backfill = self._queue_backfill_if_needed(book.pk)
-        book.refresh_from_db()
-        if queued_backfill or book.extraction_status == "processing":
+        latest_file = self._latest_source_file(book)
+        if latest_file is None:
             return Response(
-                {
-                    "book_id": book.pk,
-                    "status": "processing",
-                    "extraction_status": book.extraction_status,
-                },
-                status=status.HTTP_202_ACCEPTED,
-            )
-
-        try:
-            page_number = int(page_number)
-        except (TypeError, ValueError):
-            return Response(
-                {"detail": "Invalid page number."}, status=status.HTTP_400_BAD_REQUEST
-            )
-
-        if page_number < 1:
-            return Response(
-                {"detail": "Page number must be >= 1."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        is_preview_request = self._is_preview_request(request)
-
-        if is_preview_request and page_number > self.PREVIEW_PAGE_LIMIT:
-            return Response(
-                {
-                    "code": "purchase_required",
-                    "detail": "Purchase required to read this book.",
-                },
-                status=status.HTTP_403_FORBIDDEN,
+                {"code": "document_not_ready", "detail": "Document is not ready."},
+                status=status.HTTP_404_NOT_FOUND,
             )
 
         if is_preview_request:
-            access_bucket = self._reader_access_bucket(
-                is_owner, full_access=False, is_preview=True
-            )
-        else:
-            access_bucket = None
+            return self._preview_pdf_response(latest_file)
 
-        if not is_preview_request and not request.user.is_authenticated:
+        state, can_read, _can_download, _order = self._reader_access_state(book, request.user)
+        if not can_read:
+            code = "access_expired" if state == "expired" else "purchase_required"
+            return Response({"code": code, "detail": "Reader access is not allowed."}, status=status.HTTP_403_FORBIDDEN)
+
+        filename = latest_file.original_filename or f"{book.slug or book.pk}.pdf"
+        return self._source_pdf_response(latest_file, filename)
+
+    @action(
+        detail=True,
+        methods=["get"],
+        url_path="read/download",
+        permission_classes=[IsAuthenticated],
+    )
+    def read_download(self, request, pk=None):
+        """Serve allowed downloads: owner original or scientific buyer watermark."""
+        book = self.get_object()
+        latest_file = self._latest_source_file(book)
+        if latest_file is None:
             return Response(
-                {
-                    "code": "purchase_required",
-                    "detail": "Purchase required to read this book.",
-                },
+                {"code": "document_not_ready", "detail": "Document is not ready."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        if self._is_owner(book, request.user):
+            filename = latest_file.original_filename or f"{book.slug or book.pk}.pdf"
+            return self._source_pdf_response(latest_file, filename, as_attachment=True)
+
+        state, can_read, can_download, order = self._reader_access_state(book, request.user)
+        if not can_read:
+            code = "access_expired" if state == "expired" else "purchase_required"
+            return Response({"code": code, "detail": "Download is not allowed."}, status=status.HTTP_403_FORBIDDEN)
+        if not can_download or order is None:
+            return Response(
+                {"code": "download_not_allowed", "detail": "Download is not allowed for this book."},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        if not is_preview_request:
-            full_access = self._has_full_reader_access(book, request.user)
-            expired_order = self._get_expired_order(book, request.user)
-            if expired_order is not None:
-                return Response(
-                    {
-                        "code": "access_expired",
-                        "detail": "Your access to this book has expired.",
-                        "access_mode": "expired",
-                    },
-                    status=status.HTTP_403_FORBIDDEN,
-                )
-            if not is_owner and not full_access:
-                return Response(
-                    {
-                        "code": "purchase_required",
-                        "detail": "Purchase required to read this book.",
-                    },
-                    status=status.HTTP_403_FORBIDDEN,
-                )
-
-            access_bucket = self._reader_access_bucket(is_owner, full_access)
-
-        page = BookContent.objects.filter(book=book, page_number=page_number).first()
-        if page is None:
-            return Response(
-                {"detail": "Page not found."}, status=status.HTTP_404_NOT_FOUND
-            )
-
-        page_cache_key = (
-            f"reader:page:book:{book.pk}:access:{access_bucket}:page:{page_number}:"
-            f"v:{book.updated_at.isoformat()}:{page.version}:{page.updated_at.isoformat()}"
-        )
-        cached_page = cache.get(page_cache_key)
-        if cached_page:
-            return Response(cached_page)
-
-        render_mode, render_html, fallback_image_path = self._resolve_reader_html(
-            page.blocks or []
-        )
-        fallback_image_data = self._fallback_image_data_uri(fallback_image_path)
-        page_dimensions = self._extract_page_dimensions(page.blocks or [])
-        page_width = page_dimensions[0] if page_dimensions else None
-        page_height = page_dimensions[1] if page_dimensions else None
-
-        page_payload = {
-            "book_id": book.pk,
-            "page_number": page.page_number,
-            "render_mode": render_mode,
-            "render_html": render_html,
-            "fallback_image_data": fallback_image_data,
-            "blocks": self._sanitize_private_storage_references(page.blocks),
-            "version": page.version,
-            "page_width": page_width,
-            "page_height": page_height,
-        }
-
-        cache.set(page_cache_key, page_payload, timeout=self.READER_CACHE_TIMEOUT)
-
-        return Response(page_payload)
+        return self._watermarked_pdf_response(book, latest_file, order, request.user)
 
     @action(detail=False, methods=["get"], url_path="featured")
     def featured(self, request):

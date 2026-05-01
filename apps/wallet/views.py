@@ -28,16 +28,20 @@ logger = logging.getLogger(__name__)
 
 KEEPZ_PENDING_STATUSES = {'INITIAL', 'PROCESSING', 'PENDING', 'IN_PROGRESS', 'CREATED'}
 KEEPZ_SUCCESS_STATUSES = {'SUCCESS', 'APPROVED', 'PAID', 'COMPLETE', 'COMPLETED', 'SETTLED', 'CAPTURED'}
-KEEPZ_REFUND_STATUSES = {
-    'REFUND_REQUESTED',
-    'PARTIALLY_REFUNDED',
+KEEPZ_FULL_REVERSAL_STATUSES = {
     'REFUNDED_BY_OPERATOR',
     'REFUNDED_BY_INTEGRATOR',
     'REFUNDED_BY_KEEPZ',
+}
+KEEPZ_NON_FINAL_REFUND_STATUSES = {
+    'REFUND_REQUESTED',
+    'PARTIALLY_REFUNDED',
     'REFUNDED_FAILED',
 }
+KEEPZ_REFUND_STATUSES = KEEPZ_FULL_REVERSAL_STATUSES | KEEPZ_NON_FINAL_REFUND_STATUSES
 KEEPZ_FAILED_STATUSES = {'FAILED', 'CANCELED', 'EXPIRED', 'DECLINED', 'REJECTED', 'REVERSED'}
 KEEPZ_REFUND_PREFIX = 'REFUND'
+MAX_DEPOSIT_AMOUNT = Decimal('5000.00')
 
 
 def _parse_amount(raw_amount) -> Decimal:
@@ -51,6 +55,9 @@ def _parse_amount(raw_amount) -> Decimal:
 
     if amount <= 0 or amount.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP) != amount:
         raise ValidationError({'error': 'Invalid amount'})
+
+    if amount > MAX_DEPOSIT_AMOUNT:
+        raise ValidationError({'error': 'Amount exceeds maximum limit'})
 
     return amount
 
@@ -102,12 +109,17 @@ def _map_keepz_status(provider_status: str, current_status: str = Transaction.ST
         mapped_status = Transaction.STATUS_PENDING
     elif provider_status in KEEPZ_SUCCESS_STATUSES:
         mapped_status = Transaction.STATUS_COMPLETED
-    elif provider_status in KEEPZ_REFUND_STATUSES:
-        mapped_status = current_status if current_status == Transaction.STATUS_COMPLETED else Transaction.STATUS_PENDING
+    elif provider_status in KEEPZ_FULL_REVERSAL_STATUSES:
+        mapped_status = Transaction.STATUS_FAILED
+    elif provider_status in KEEPZ_NON_FINAL_REFUND_STATUSES:
+        if provider_status == 'REFUNDED_FAILED':
+            mapped_status = current_status if current_status in {Transaction.STATUS_COMPLETED, Transaction.STATUS_FAILED} else Transaction.STATUS_PENDING
+        else:
+            mapped_status = Transaction.STATUS_PENDING
     elif provider_status in KEEPZ_FAILED_STATUSES:
         mapped_status = Transaction.STATUS_FAILED
     elif provider_status.startswith(KEEPZ_REFUND_PREFIX):
-        mapped_status = current_status if current_status == Transaction.STATUS_COMPLETED else Transaction.STATUS_PENDING
+        mapped_status = current_status if current_status in {Transaction.STATUS_COMPLETED, Transaction.STATUS_FAILED} else Transaction.STATUS_PENDING
     else:
         mapped_status = current_status if current_status == Transaction.STATUS_COMPLETED else Transaction.STATUS_PENDING
         logger.warning('Unknown Keepz status %r, treating as PENDING (was %r)', provider_status, current_status)
@@ -175,11 +187,35 @@ def _credit_wallet_if_needed(transaction_id: int, provider_status: str, payload:
         if payload is not None:
             transaction_obj.provider_payload = payload
 
+        is_reversed = (
+            was_credited
+            and (
+                provider_status in KEEPZ_FAILED_STATUSES
+                or provider_status in KEEPZ_FULL_REVERSAL_STATUSES
+            )
+        )
+
+        is_non_final_refund = (
+            was_credited
+            and provider_status in KEEPZ_NON_FINAL_REFUND_STATUSES
+        )
+
         if provider_status in KEEPZ_SUCCESS_STATUSES and transaction_obj.credited_at is None:
             wallet.balance = wallet.balance + transaction_obj.amount
             wallet.save(update_fields=['balance', 'updated_at'])
             transaction_obj.credited_at = timezone.now()
             transaction_obj.status = Transaction.STATUS_COMPLETED
+        elif is_reversed:
+            wallet.balance = wallet.balance - transaction_obj.amount
+            wallet.save(update_fields=['balance', 'updated_at'])
+            transaction_obj.credited_at = None
+            transaction_obj.status = Transaction.STATUS_FAILED
+        elif is_non_final_refund:
+            logger.warning(
+                'Keepz non-final refund status received for credited transaction_id=%s provider_status=%r — wallet not debited, manual review recommended',
+                transaction_obj.pk,
+                provider_status,
+            )
 
         transaction_obj.save(update_fields=['provider_status', 'status', 'provider_payload', 'credited_at'])
         logger.info(

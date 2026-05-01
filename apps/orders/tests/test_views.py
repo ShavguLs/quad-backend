@@ -164,6 +164,27 @@ class TestOrderViewSet:
         book.refresh_from_db()
         assert book.revenue_total == Decimal("50.00")
 
+    def test_create_scientific_purchase_has_no_expiry(self):
+        """Test scientific book purchases do not expire."""
+        book = Book.objects.create(
+            title="Scientific Book",
+            owner=self.author,
+            price=Decimal("50.00"),
+            status="published",
+            access_type=Book.ACCESS_TYPE_SCIENTIFIC,
+        )
+
+        view = OrderViewSet.as_view({'post': 'create'})
+        request = self.factory.post('/orders/', {'book': book.id})
+        force_authenticate(request, user=self.buyer)
+
+        response = view(request)
+
+        assert response.status_code == status.HTTP_201_CREATED
+        order = Order.objects.get(book=book, buyer=self.buyer)
+        assert order.expires_at is None
+        assert response.data['expiresAt'] is None
+
     def test_create_book_not_found(self):
         """Test purchase fails when book doesn't exist."""
         view = OrderViewSet.as_view({'post': 'create'})

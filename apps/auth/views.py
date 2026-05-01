@@ -131,7 +131,7 @@ class RefreshView(APIView):
 
     def post(self, request):
         _enforce_csrf(request)
-        refresh = request.data.get("refresh") or request.COOKIES.get(settings.AUTH_REFRESH_COOKIE_NAME)
+        refresh = request.COOKIES.get(settings.AUTH_REFRESH_COOKIE_NAME)
         if not refresh:
             raise DRFValidationError({"detail": "Refresh token missing."})
 
@@ -239,6 +239,9 @@ class GoogleLoginView(APIView):
 
         google_sub = payload["sub"]
         email = payload.get("email", "")
+        email_verified = payload.get("email_verified") is True
+        if not email or not email_verified:
+            raise exceptions.AuthenticationFailed("Google email is not verified.")
         first_name = payload.get("given_name", "") or email.split("@")[0]
         last_name = payload.get("family_name", "") or "."
 
@@ -276,6 +279,11 @@ class LogoutView(APIView):
 
     def post(self, request):
         _enforce_csrf(request)
+
+        if request.user.is_authenticated:
+            request.user.active_session_id = uuid.uuid4()
+            request.user.save(update_fields=["active_session_id"])
+
         raw_refresh_token = request.COOKIES.get(settings.AUTH_REFRESH_COOKIE_NAME)
         if raw_refresh_token:
             try:

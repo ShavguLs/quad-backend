@@ -274,6 +274,7 @@ CORS_ALLOW_ALL_ORIGINS = env.bool('CORS_ALLOW_ALL_ORIGINS', default=False)
 CORS_ALLOWED_ORIGINS = env.list('CORS_ALLOWED_ORIGINS', default=[
     'https://quaduni.com',
     'http://quaduni.com',
+    'https://reader.quaduni.com',
     'https://www.quaduni.com',
     'http://www.quaduni.com',
 ])

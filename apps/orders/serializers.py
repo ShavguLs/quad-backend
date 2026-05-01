@@ -22,11 +22,12 @@ class OrderSerializer(serializers.ModelSerializer):
     img = serializers.SerializerMethodField()
     timestamp = serializers.SerializerMethodField()
     expiresAt = serializers.SerializerMethodField()
+    accessType = serializers.SerializerMethodField()
 
     class Meta:
         model = Order
-        fields = ['id', 'bookTitle', 'price', 'img', 'status', 'timestamp', 'expiresAt']
-        read_only_fields = ['id', 'bookTitle', 'price', 'img', 'status', 'timestamp', 'expiresAt']
+        fields = ['id', 'bookTitle', 'price', 'img', 'status', 'timestamp', 'expiresAt', 'accessType']
+        read_only_fields = ['id', 'bookTitle', 'price', 'img', 'status', 'timestamp', 'expiresAt', 'accessType']
 
     def get_bookTitle(self, obj):
         """Return book title for frontend compatibility."""
@@ -54,6 +55,9 @@ class OrderSerializer(serializers.ModelSerializer):
         if obj.expires_at:
             return obj.expires_at.isoformat()
         return None
+
+    def get_accessType(self, obj):
+        return obj.book.access_type
 
 
 class OrderCreateSerializer(serializers.Serializer):

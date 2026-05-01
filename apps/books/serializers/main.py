@@ -1,5 +1,6 @@
 """Serializers for the books app."""
 
+from django.utils import timezone
 from rest_framework import serializers
 
 from apps.books.models import (
@@ -11,6 +12,7 @@ from apps.books.models import (
     ReadingPosition,
 )
 from apps.books.validators import validate_image
+from apps.orders.models import Order
 
 
 class BookFileSerializer(serializers.ModelSerializer):
@@ -51,6 +53,8 @@ class BookSerializer(serializers.ModelSerializer):
     followers = serializers.SerializerMethodField()
     revenue = serializers.SerializerMethodField()
     purchase_count = serializers.SerializerMethodField()
+    access_expires_at = serializers.SerializerMethodField()
+    access_is_expired = serializers.SerializerMethodField()
 
     publish_status = serializers.CharField(read_only=True)
     publish_error = serializers.CharField(read_only=True)
@@ -69,6 +73,7 @@ class BookSerializer(serializers.ModelSerializer):
             "description",
             "status",
             "price",
+            "access_type",
             "category",
             "is_featured",
             "view_count",
@@ -90,6 +95,8 @@ class BookSerializer(serializers.ModelSerializer):
             "followers",
             "revenue",
             "purchase_count",
+            "access_expires_at",
+            "access_is_expired",
         ]
         read_only_fields = [
             "id",
@@ -106,6 +113,8 @@ class BookSerializer(serializers.ModelSerializer):
             "followers",
             "revenue",
             "purchase_count",
+            "access_expires_at",
+            "access_is_expired",
             "publish_status",
             "publish_error",
             "extraction_status",
@@ -138,6 +147,27 @@ class BookSerializer(serializers.ModelSerializer):
 
     def get_purchase_count(self, obj):
         return obj.orders.filter(status="COMPLETED").count()
+
+    def _get_user_order(self, obj):
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        if not user or not user.is_authenticated or obj.owner_id == user.id:
+            return None
+        return Order.objects.filter(
+            buyer=user,
+            book=obj,
+            status=Order.STATUS_COMPLETED,
+        ).order_by("-created_at").first()
+
+    def get_access_expires_at(self, obj):
+        order = self._get_user_order(obj)
+        if order and order.expires_at:
+            return order.expires_at.isoformat()
+        return None
+
+    def get_access_is_expired(self, obj):
+        order = self._get_user_order(obj)
+        return bool(order and order.expires_at and order.expires_at <= timezone.now())
 
     def get_extraction_error(self, obj):
         request = self.context.get("request")
@@ -186,6 +216,7 @@ class MyBookSerializer(serializers.ModelSerializer):
             "id",
             "title",
             "price",
+            "access_type",
             "coverUrl",
             "view_count",
             "views",

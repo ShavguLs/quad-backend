@@ -1,7 +1,9 @@
 from unittest.mock import patch
+from datetime import timedelta
 
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase
+from django.utils import timezone
 from rest_framework.test import APIClient
 
 from apps.books.models import Book, BookContent, BookFile, ReadingPosition
@@ -20,6 +22,22 @@ def _minimal_pdf_file(name: str = "sample.pdf") -> SimpleUploadedFile:
         b"trailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n180\n%%EOF"
     )
     return SimpleUploadedFile(name, content, content_type="application/pdf")
+
+
+def _valid_pdf_bytes(page_count: int = 12) -> bytes:
+    import fitz
+
+    doc = fitz.open()
+    for page_number in range(1, page_count + 1):
+        page = doc.new_page(width=300, height=420)
+        page.insert_text((72, 72), f"Quaduni test page {page_number}", fontsize=14)
+    payload = doc.tobytes(garbage=4, deflate=True)
+    doc.close()
+    return payload
+
+
+def _streaming_content(response) -> bytes:
+    return b"".join(response.streaming_content)
 
 
 class ReaderAccessApiTests(TestCase):
@@ -51,6 +69,18 @@ class ReaderAccessApiTests(TestCase):
             total_pages=11,
             price="10.00",
             category="BOOKS",
+        )
+        self.source_pdf_bytes = _valid_pdf_bytes(page_count=12)
+        self.book_file = BookFile.objects.create(
+            book=self.book,
+            file=SimpleUploadedFile(
+                "reader-test.pdf",
+                self.source_pdf_bytes,
+                content_type="application/pdf",
+            ),
+            original_filename="reader-test.pdf",
+            file_size=len(self.source_pdf_bytes),
+            mime_type="application/pdf",
         )
 
         for page_number in range(1, 12):
@@ -86,6 +116,135 @@ class ReaderAccessApiTests(TestCase):
             category="BOOKS",
         )
 
+    def test_new_reader_preview_access_returns_preview_document_only(self):
+        response = self.client.get(f"/books/{self.book.id}/read/access/?preview=1")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["mode"], "preview")
+        self.assertTrue(response.data["can_read"])
+        self.assertFalse(response.data["can_download"])
+        self.assertIn("/read/document/", response.data["document_url"])
+        self.assertIn("preview=1", response.data["document_url"])
+
+        document_response = self.client.get(f"/books/{self.book.id}/read/document/?preview=1")
+        self.assertEqual(document_response.status_code, 200)
+        preview_bytes = _streaming_content(document_response)
+        self.assertTrue(preview_bytes.startswith(b"%PDF"))
+        self.assertNotEqual(preview_bytes, self.source_pdf_bytes)
+
+        self.book_file.refresh_from_db()
+        self.assertTrue(self.book_file.preview_file)
+
+    def test_new_reader_guest_and_unpurchased_full_access_are_blocked(self):
+        response = self.client.get(f"/books/{self.book.id}/read/access/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["status"], "purchase_required")
+        self.assertFalse(response.data["can_read"])
+        self.assertIsNone(response.data["document_url"])
+
+        document_response = self.client.get(f"/books/{self.book.id}/read/document/")
+        self.assertEqual(document_response.status_code, 403)
+        self.assertEqual(document_response.data["code"], "purchase_required")
+
+        non_buyer = User.objects.create_user(
+            email="new_reader_nonbuyer@example.com",
+            password="testpass123",
+            first_name="Non",
+            last_name="Buyer",
+            handle="new_reader_nonbuyer",
+        )
+        self.client.force_authenticate(non_buyer)
+        response = self.client.get(f"/books/{self.book.id}/read/access/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["status"], "purchase_required")
+
+    def test_new_reader_expired_educational_buyer_is_blocked(self):
+        Order.objects.create(
+            buyer=self.buyer,
+            book=self.book,
+            amount=self.book.price,
+            status=Order.STATUS_COMPLETED,
+            expires_at=timezone.now() - timedelta(days=1),
+        )
+        self.client.force_authenticate(self.buyer)
+
+        response = self.client.get(f"/books/{self.book.id}/read/access/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["status"], "expired")
+        self.assertFalse(response.data["can_read"])
+
+        document_response = self.client.get(f"/books/{self.book.id}/read/document/")
+        self.assertEqual(document_response.status_code, 403)
+        self.assertEqual(document_response.data["code"], "access_expired")
+
+    def test_new_reader_active_educational_buyer_can_read_but_not_download(self):
+        Order.objects.create(
+            buyer=self.buyer,
+            book=self.book,
+            amount=self.book.price,
+            status=Order.STATUS_COMPLETED,
+            expires_at=timezone.now() + timedelta(days=180),
+        )
+        self.client.force_authenticate(self.buyer)
+
+        response = self.client.get(f"/books/{self.book.id}/read/access/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["status"], "ready")
+        self.assertTrue(response.data["can_read"])
+        self.assertFalse(response.data["can_download"])
+        self.assertIsNotNone(response.data["document_url"])
+        self.assertIsNone(response.data["download_url"])
+
+        download_response = self.client.get(f"/books/{self.book.id}/read/download/")
+        self.assertEqual(download_response.status_code, 403)
+        self.assertEqual(download_response.data["code"], "download_not_allowed")
+
+    def test_new_reader_scientific_buyer_download_is_watermarked(self):
+        self.book.access_type = Book.ACCESS_TYPE_SCIENTIFIC
+        self.book.save(update_fields=["access_type"])
+        Order.objects.create(
+            buyer=self.buyer,
+            book=self.book,
+            amount=self.book.price,
+            status=Order.STATUS_COMPLETED,
+            expires_at=None,
+        )
+        self.client.force_authenticate(self.buyer)
+
+        response = self.client.get(f"/books/{self.book.id}/read/access/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["status"], "ready")
+        self.assertTrue(response.data["can_read"])
+        self.assertTrue(response.data["can_download"])
+        self.assertIsNotNone(response.data["download_url"])
+
+        download_response = self.client.get(f"/books/{self.book.id}/read/download/")
+        self.assertEqual(download_response.status_code, 200)
+        watermarked_bytes = _streaming_content(download_response)
+        self.assertTrue(watermarked_bytes.startswith(b"%PDF"))
+        self.assertNotEqual(watermarked_bytes, self.source_pdf_bytes)
+        import fitz
+
+        doc = fitz.open(stream=watermarked_bytes, filetype="pdf")
+        extracted_text = "\n".join(page.get_text() for page in doc)
+        doc.close()
+        self.assertIn("Quaduni", extracted_text)
+
+    def test_new_reader_owner_downloads_original_for_both_book_types(self):
+        for access_type in (Book.ACCESS_TYPE_EDUCATIONAL, Book.ACCESS_TYPE_SCIENTIFIC):
+            self.book.access_type = access_type
+            self.book.save(update_fields=["access_type"])
+            self.client.force_authenticate(self.owner)
+
+            response = self.client.get(f"/books/{self.book.id}/read/access/")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.data["status"], "ready")
+            self.assertTrue(response.data["can_download"])
+
+            download_response = self.client.get(f"/books/{self.book.id}/read/download/")
+            self.assertEqual(download_response.status_code, 200)
+            self.assertEqual(_streaming_content(download_response), self.source_pdf_bytes)
+
     def test_create_book_stays_draft_until_explicit_publish(self):
         self.client.force_authenticate(self.owner)
 
@@ -106,108 +265,14 @@ class ReaderAccessApiTests(TestCase):
         created_book = Book.objects.get(id=response.data["id"])
         self.assertEqual(created_book.status, "draft")
 
-    def test_manifest_access_modes_owner_buyer_unauthenticated_requires_purchase(self):
-        # Owner => owner
+    def test_old_reader_manifest_and_page_endpoints_are_removed(self):
         self.client.force_authenticate(self.owner)
-        response = self.client.get(f"/books/{self.book.id}/read/manifest/")
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data["access_mode"], "owner")
 
-        # Buyer => full
-        Order.objects.create(
-            buyer=self.buyer,
-            book=self.book,
-            amount=self.book.price,
-            status=Order.STATUS_COMPLETED,
-        )
-        self.client.force_authenticate(self.buyer)
-        response = self.client.get(f"/books/{self.book.id}/read/manifest/")
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data["access_mode"], "full")
+        manifest_response = self.client.get(f"/books/{self.book.id}/read/manifest/")
+        page_response = self.client.get(f"/books/{self.book.id}/read/pages/1/")
 
-        # Unauthenticated => purchase required
-        self.client.force_authenticate(None)
-        response = self.client.get(f"/books/{self.book.id}/read/manifest/")
-        self.assertEqual(response.status_code, 403)
-        self.assertEqual(response.data["code"], "purchase_required")
-
-    def test_reader_cache_is_scoped_by_access(self):
-        Order.objects.create(
-            buyer=self.buyer,
-            book=self.book,
-            amount=self.book.price,
-            status=Order.STATUS_COMPLETED,
-        )
-
-        # Warm full-access cache as buyer.
-        self.client.force_authenticate(self.buyer)
-        full_manifest = self.client.get(f"/books/{self.book.id}/read/manifest/")
-        self.assertEqual(full_manifest.status_code, 200)
-        self.assertEqual(full_manifest.data["access_mode"], "full")
-
-        full_page = self.client.get(f"/books/{self.book.id}/read/pages/4/")
-        self.assertEqual(full_page.status_code, 200)
-        self.assertEqual(full_page.data["page_number"], 4)
-
-        # Unauthenticated user must not get cached full-access data.
-        self.client.force_authenticate(None)
-        manifest_resp = self.client.get(f"/books/{self.book.id}/read/manifest/")
-        self.assertEqual(manifest_resp.status_code, 403)
-        self.assertEqual(manifest_resp.data["code"], "purchase_required")
-
-        page_resp = self.client.get(f"/books/{self.book.id}/read/pages/1/")
-        self.assertEqual(page_resp.status_code, 403)
-        self.assertEqual(page_resp.data["code"], "purchase_required")
-
-    def test_purchase_required_for_non_buyer(self):
-        non_buyer = User.objects.create_user(
-            email="nonbuyer@example.com",
-            password="testpass123",
-            first_name="Non",
-            last_name="Buyer",
-            handle="non_buyer",
-        )
-        self.client.force_authenticate(non_buyer)
-
-        response = self.client.get(f"/books/{self.book.id}/read/manifest/")
-        self.assertEqual(response.status_code, 403)
-        self.assertEqual(response.data["code"], "purchase_required")
-
-        page_resp = self.client.get(f"/books/{self.book.id}/read/pages/1/")
-        self.assertEqual(page_resp.status_code, 403)
-        self.assertEqual(page_resp.data["code"], "purchase_required")
-
-    def test_read_page_redacts_private_storage_urls_from_html_and_blocks(self):
-        BookContent.objects.filter(book=self.book, page_number=2).update(
-            blocks=[
-                {
-                    "id": "blk_2_0",
-                    "type": "paragraph",
-                    "text": "private link",
-                    "metadata": {
-                        "render_mode": "html",
-                        "render_html": '<p><img src="https://media.quaduni.com/books/files/2026/04/secret.pdf" /></p>',
-                    },
-                },
-                {
-                    "id": "blk_2_1",
-                    "type": "image",
-                    "metadata": {
-                        "source_url": "https://media.quaduni.com/extracted_images/test/page-2.png",
-                        "safe_label": "page image",
-                    },
-                },
-            ]
-        )
-
-        self.client.force_authenticate(self.owner)
-        response = self.client.get(f"/books/{self.book.id}/read/pages/2/")
-
-        self.assertEqual(response.status_code, 200)
-        self.assertNotIn("books/files/", response.data["render_html"])
-        self.assertIn('src="#"', response.data["render_html"])
-        self.assertEqual(response.data["blocks"][1]["metadata"]["source_url"], None)
-        self.assertEqual(response.data["blocks"][1]["metadata"]["safe_label"], "page image")
+        self.assertEqual(manifest_response.status_code, 404)
+        self.assertEqual(page_response.status_code, 404)
 
     @patch("apps.books.tasks.process_book_upload_task.delay")
     def test_upload_response_does_not_expose_private_download_url(self, mocked_delay):
@@ -255,60 +320,6 @@ class ReaderAccessApiTests(TestCase):
         response = self.client.get("/books/999999/reading-position/")
 
         self.assertEqual(response.status_code, 404)
-
-    def test_manifest_uses_tallest_page_frame_dimensions(self):
-        BookContent.objects.filter(book=self.book, page_number=1).update(
-            blocks=[
-                {
-                    "id": "blk_1_0",
-                    "type": "paragraph",
-                    "text": "Page 1 text",
-                    "metadata": {
-                        "render_mode": "html",
-                        "render_html": "<p>Page 1 text</p>",
-                        "page_width": 510.0,
-                        "page_height": 760.0,
-                    },
-                }
-            ]
-        )
-        BookContent.objects.filter(book=self.book, page_number=2).update(
-            blocks=[
-                {
-                    "id": "blk_2_0",
-                    "type": "paragraph",
-                    "text": "Page 2 text",
-                    "metadata": {
-                        "render_mode": "html",
-                        "render_html": "<p>Page 2 text</p>",
-                        "page_width": 540.0,
-                        "page_height": 900.0,
-                    },
-                }
-            ]
-        )
-        BookContent.objects.filter(book=self.book, page_number=3).update(
-            blocks=[
-                {
-                    "id": "blk_3_0",
-                    "type": "paragraph",
-                    "text": "Page 3 text",
-                    "metadata": {
-                        "render_mode": "html",
-                        "render_html": "<p>Page 3 text</p>",
-                        "page_width": 560.0,
-                        "page_height": 900.0,
-                    },
-                }
-            ]
-        )
-
-        self.client.force_authenticate(self.owner)
-        response = self.client.get(f"/books/{self.book.id}/read/manifest/")
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data["page_frame_height"], 900.0)
-        self.assertEqual(response.data["page_frame_width"], 560.0)
 
     @patch("apps.books.tasks.process_book_upload_task.delay")
     def test_upload_is_async_and_marks_processing(self, mocked_delay):
@@ -428,33 +439,6 @@ class ReaderAccessApiTests(TestCase):
         self.assertEqual(stored_file.mime_type, "application/pdf")
         mocked_delay.assert_called_once_with(draft_book.id)
 
-    @patch("apps.books.tasks.process_book_upload_task.delay")
-    def test_auto_backfill_queues_when_content_missing(self, mocked_delay):
-        book = Book.objects.create(
-            title="Backfill Needed",
-            author="Owner User",
-            owner=self.owner,
-            status="published",
-            is_visible=True,
-            extraction_status="failed",
-            total_pages=0,
-            price="12.00",
-            category="BOOKS",
-        )
-        BookFile.objects.create(
-            book=book,
-            file=_minimal_pdf_file("backfill.pdf"),
-            original_filename="backfill.pdf",
-            file_size=128,
-            mime_type="application/pdf",
-        )
-
-        self.client.force_authenticate(self.owner)
-        response = self.client.get(f"/books/{book.id}/read/manifest/")
-        self.assertEqual(response.status_code, 202)
-        self.assertEqual(response.data["status"], "processing")
-        mocked_delay.assert_called_once_with(book.id)
-
     def test_saved_pages_requires_book_access(self):
         non_buyer = User.objects.create_user(
             email="nonbuyer2@example.com",
@@ -513,179 +497,18 @@ class ReaderAccessApiTests(TestCase):
         )
         self.assertEqual(response.status_code, 200)
 
-    def test_guest_manifest_requires_purchase(self):
-        """Guest users should not get reader manifest access."""
-        response = self.client.get(f"/books/{self.book.id}/read/manifest/")
-        self.assertEqual(response.status_code, 403)
-        self.assertEqual(response.data["code"], "purchase_required")
-
-    def test_guest_pages_require_purchase(self):
-        """Guest users should not get reader page access."""
-        response = self.client.get(f"/books/{self.book.id}/read/pages/1/")
-        self.assertEqual(response.status_code, 403)
-        self.assertEqual(response.data["code"], "purchase_required")
-
-    def test_guest_preview_respects_book_visibility(self):
-        """Guest users should not access draft or invisible books."""
-        draft_book = Book.objects.create(
-            title="Draft Preview Test",
-            author="Owner User",
-            owner=self.owner,
-            status="draft",
-            is_visible=False,
-            extraction_status="pending",
-            total_pages=5,
-            price="5.00",
-            category="BOOKS",
-        )
-
-        response = self.client.get(f"/books/{draft_book.id}/read/manifest/?preview=1")
-        self.assertEqual(response.status_code, 404)
-
-        response = self.client.get(f"/books/{draft_book.id}/read/pages/1/?preview=1")
-        self.assertEqual(response.status_code, 404)
-
-    def test_guest_preview_manifest_returns_preview_access(self):
-        response = self.client.get(f"/books/{self.book.id}/read/manifest/?preview=1")
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data["access_mode"], "preview")
-        self.assertEqual(response.data["total_pages"], 11)
-        self.assertEqual(response.data["available_pages"], 10)
-
-    def test_guest_preview_pages_allow_first_ten_and_block_eleventh(self):
-        response = self.client.get(f"/books/{self.book.id}/read/pages/1/?preview=1")
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data["page_number"], 1)
-
-        response = self.client.get(f"/books/{self.book.id}/read/pages/10/?preview=1")
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data["page_number"], 10)
-
-        response = self.client.get(f"/books/{self.book.id}/read/pages/11/?preview=1")
-        self.assertEqual(response.status_code, 403)
-        self.assertEqual(response.data["code"], "purchase_required")
-
-    def test_non_buyer_preview_manifest_and_page_are_available(self):
-        non_buyer = User.objects.create_user(
-            email="nonbuyer_preview@example.com",
-            password="testpass123",
-            first_name="Non",
-            last_name="Buyer",
-            handle="non_buyer_preview",
-        )
-        self.client.force_authenticate(non_buyer)
-
-        manifest_response = self.client.get(
-            f"/books/{self.book.id}/read/manifest/?preview=1"
-        )
-        self.assertEqual(manifest_response.status_code, 200)
-        self.assertEqual(manifest_response.data["access_mode"], "preview")
-        self.assertEqual(manifest_response.data["available_pages"], 10)
-
-        page_response = self.client.get(f"/books/{self.book.id}/read/pages/10/?preview=1")
-        self.assertEqual(page_response.status_code, 200)
-        self.assertEqual(page_response.data["page_number"], 10)
-
-    def test_expired_buyer_preview_manifest_and_page_are_available(self):
-        Order.objects.create(
-            buyer=self.buyer,
-            book=self.book,
-            amount=self.book.price,
-            status=Order.STATUS_COMPLETED,
-            expires_at="2020-01-01T00:00:00Z",
-        )
-        self.client.force_authenticate(self.buyer)
-
-        manifest_response = self.client.get(
-            f"/books/{self.book.id}/read/manifest/?preview=1"
-        )
-        self.assertEqual(manifest_response.status_code, 200)
-        self.assertEqual(manifest_response.data["access_mode"], "preview")
-        self.assertEqual(manifest_response.data["available_pages"], 10)
-
-        page_response = self.client.get(f"/books/{self.book.id}/read/pages/10/?preview=1")
-        self.assertEqual(page_response.status_code, 200)
-        self.assertEqual(page_response.data["page_number"], 10)
-
-    def test_guest_manifest_requires_purchase_even_for_small_books(self):
-        """Guest users should still require purchase for shorter books."""
-        small_book = Book.objects.create(
-            title="Small Book",
-            author="Owner User",
-            owner=self.owner,
-            status="published",
-            is_visible=True,
-            extraction_status="completed",
-            total_pages=5,
-            price="5.00",
-            category="BOOKS",
-        )
-
-        for page_number in range(1, 6):
-            BookContent.objects.create(
-                book=small_book,
-                page_number=page_number,
-                version=1,
-                blocks=[
-                    {
-                        "id": f"blk_{page_number}_0",
-                        "type": "paragraph",
-                        "text": f"Page {page_number} text",
-                        "metadata": {
-                            "render_mode": "html",
-                            "render_html": f"<p>Page {page_number} text</p>",
-                        },
-                    }
-                ],
-            )
-
-        response = self.client.get(f"/books/{small_book.id}/read/manifest/")
-        self.assertEqual(response.status_code, 403)
-        self.assertEqual(response.data["code"], "purchase_required")
-
-    def test_owner_full_access_unchanged(self):
-        """Owner should still get full access regardless of preview changes."""
-        self.client.force_authenticate(self.owner)
-        response = self.client.get(f"/books/{self.book.id}/read/manifest/")
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data["access_mode"], "owner")
-        self.assertEqual(response.data["available_pages"], 11)
-
-        # Owner can access all pages including page 11+
-        response = self.client.get(f"/books/{self.book.id}/read/pages/11/")
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data["page_number"], 11)
-
-    def test_buyer_full_access_unchanged(self):
-        """Buyer should still get full access regardless of preview changes."""
+    def test_old_reader_endpoints_are_removed_for_guests_and_buyers(self):
         Order.objects.create(
             buyer=self.buyer,
             book=self.book,
             amount=self.book.price,
             status=Order.STATUS_COMPLETED,
         )
-        self.client.force_authenticate(self.buyer)
-        response = self.client.get(f"/books/{self.book.id}/read/manifest/")
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data["access_mode"], "full")
-        self.assertEqual(response.data["available_pages"], 11)
 
-        # Buyer can access all pages including page 11+
-        response = self.client.get(f"/books/{self.book.id}/read/pages/11/")
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data["page_number"], 11)
+        for user in (None, self.buyer):
+            self.client.force_authenticate(user)
+            manifest_response = self.client.get(f"/books/{self.book.id}/read/manifest/?preview=1")
+            page_response = self.client.get(f"/books/{self.book.id}/read/pages/1/?preview=1")
 
-    def test_expired_purchase_still_gets_403(self):
-        """Users with expired purchases should get 403, not preview."""
-        Order.objects.create(
-            buyer=self.buyer,
-            book=self.book,
-            amount=self.book.price,
-            status=Order.STATUS_COMPLETED,
-            expires_at="2020-01-01T00:00:00Z",
-        )
-        self.client.force_authenticate(self.buyer)
-        response = self.client.get(f"/books/{self.book.id}/read/manifest/")
-        self.assertEqual(response.status_code, 403)
-        self.assertEqual(response.data["access_mode"], "expired")
+            self.assertEqual(manifest_response.status_code, 404)
+            self.assertEqual(page_response.status_code, 404)
