@@ -16,6 +16,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.orders.services import finalize_cart_checkout_transaction
 from apps.wallet.keepz_client import KeepzClient, KeepzError
 from apps.wallet.models import Transaction, Wallet
 from apps.wallet.serializers import (
@@ -231,6 +232,15 @@ def _credit_wallet_if_needed(transaction_id: int, provider_status: str, payload:
         return transaction_obj
 
 
+def _finalize_checkout_if_needed(transaction_obj: Transaction) -> None:
+    if transaction_obj.status != Transaction.STATUS_COMPLETED:
+        return
+    payload = transaction_obj.provider_payload or {}
+    checkout = payload.get('checkout') if isinstance(payload, dict) else None
+    if isinstance(checkout, dict) and checkout.get('type') == 'cart_deficit':
+        finalize_cart_checkout_transaction(transaction_obj)
+
+
 class WalletViewSet(viewsets.GenericViewSet):
     """
     ViewSet for wallet operations.
@@ -432,6 +442,7 @@ class WalletViewSet(viewsets.GenericViewSet):
         )
         merged_payload = _merge_provider_payload(transaction_obj, 'order_status', keepz_response)
         transaction_obj = _credit_wallet_if_needed(transaction_obj.pk, provider_status, merged_payload)
+        _finalize_checkout_if_needed(transaction_obj)
 
         logger.info(
             'Keepz status resolution: extracted=%r, mapped=%r, transaction_id=%s',
@@ -493,5 +504,6 @@ class WalletDepositCallbackView(APIView):
         provider_status = _extract_keepz_status(keepz_response)
         merged_payload = _merge_provider_payload(transaction_obj, 'callback', payload)
         merged_payload['verified_order_status'] = keepz_response
-        _credit_wallet_if_needed(transaction_obj.pk, provider_status, merged_payload)
+        transaction_obj = _credit_wallet_if_needed(transaction_obj.pk, provider_status, merged_payload)
+        _finalize_checkout_if_needed(transaction_obj)
         return Response({'acknowledged': True}, status=status.HTTP_200_OK)

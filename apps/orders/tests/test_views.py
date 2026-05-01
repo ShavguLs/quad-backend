@@ -4,6 +4,7 @@ Unit tests for order views.
 
 import pytest
 from decimal import Decimal
+from unittest.mock import Mock, patch
 
 from django.db import transaction
 from rest_framework import status
@@ -463,9 +464,8 @@ class TestOrderViewSetEdgeCases:
         response = view(request)
 
         assert response.status_code == status.HTTP_201_CREATED
-
         self.buyer_wallet.refresh_from_db()
-        assert self.buyer_wallet.balance == Decimal("0.00")
+        assert self.buyer_wallet.balance == Decimal('0.00')
 
     def test_purchase_with_just_under_balance(self):
         """Test purchase fails with balance just under price."""
@@ -560,3 +560,165 @@ class TestOrderViewSetEdgeCases:
         response = view(request)
 
         assert response.status_code == status.HTTP_201_CREATED
+
+
+class TestCartCheckoutViewSet:
+    def setup_method(self):
+        self.client = APIClient()
+        self.buyer = User.objects.create_user(
+            email="cartbuyer@example.com",
+            password="secret123",
+            first_name="Cart",
+            last_name="Buyer",
+            handle="cartbuyer",
+        )
+        self.author = User.objects.create_user(
+            email="cartauthor@example.com",
+            password="secret123",
+            first_name="Cart",
+            last_name="Author",
+            handle="cartauthor",
+        )
+        self.other_author = User.objects.create_user(
+            email="cartauthor2@example.com",
+            password="secret123",
+            first_name="Cart",
+            last_name="Author Two",
+            handle="cartauthor2",
+        )
+        self.client.force_authenticate(user=self.buyer)
+        self.buyer_wallet = Wallet.objects.get(user=self.buyer)
+        self.author_wallet = Wallet.objects.get(user=self.author)
+        self.other_author_wallet = Wallet.objects.get(user=self.other_author)
+
+    def test_cart_checkout_completes_with_wallet_balance(self):
+        self.buyer_wallet.balance = Decimal('100.00')
+        self.buyer_wallet.save()
+        book_one = Book.objects.create(title='Cart One', owner=self.author, price=Decimal('25.00'), status='published')
+        book_two = Book.objects.create(title='Cart Two', owner=self.author, price=Decimal('15.00'), status='published')
+
+        response = self.client.post('/orders/checkout/', {'books': [book_one.id, book_two.id]}, format='json')
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.data['status'] == Order.STATUS_COMPLETED
+        assert len(response.data['orders']) == 2
+        assert Order.objects.filter(buyer=self.buyer, status=Order.STATUS_COMPLETED).count() == 2
+        self.buyer_wallet.refresh_from_db()
+        self.author_wallet.refresh_from_db()
+        assert self.buyer_wallet.balance == Decimal('60.00')
+        assert self.author_wallet.balance == Decimal('40.00')
+        assert Transaction.objects.filter(wallet=self.buyer_wallet, type=Transaction.TYPE_WITHDRAW).count() == 2
+        assert Transaction.objects.filter(wallet=self.author_wallet, type=Transaction.TYPE_SALE).count() == 2
+
+    def test_cart_checkout_distributes_funds_to_multiple_authors(self):
+        self.buyer_wallet.balance = Decimal('100.00')
+        self.buyer_wallet.save()
+        book_one = Book.objects.create(title='Author One Book', owner=self.author, price=Decimal('30.00'), status='published')
+        book_two = Book.objects.create(title='Author Two Book', owner=self.other_author, price=Decimal('20.00'), status='published')
+
+        response = self.client.post('/orders/checkout/', {'books': [book_one.id, book_two.id]}, format='json')
+
+        assert response.status_code == status.HTTP_200_OK
+        self.author_wallet.refresh_from_db()
+        self.other_author_wallet.refresh_from_db()
+        assert self.author_wallet.balance == Decimal('30.00')
+        assert self.other_author_wallet.balance == Decimal('20.00')
+
+    def test_cart_checkout_insufficient_balance_creates_keepz_deficit_order(self):
+        self.buyer_wallet.balance = Decimal('20.00')
+        self.buyer_wallet.save()
+        book_one = Book.objects.create(title='Deficit One', owner=self.author, price=Decimal('35.00'), status='published')
+        book_two = Book.objects.create(title='Deficit Two', owner=self.author, price=Decimal('15.00'), status='published')
+
+        with patch('apps.orders.views.KeepzClient') as mock_client_cls:
+            mock_client = Mock()
+            mock_client.create_order.return_value = {'urlForQR': 'https://keepz.test/pay/cart', 'status': 'INITIAL'}
+            mock_client_cls.return_value = mock_client
+            response = self.client.post('/orders/checkout/', {'books': [book_one.id, book_two.id]}, format='json')
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.data['status'] == 'PAYMENT_REQUIRED'
+        assert response.data['checkoutUrl'] == 'https://keepz.test/pay/cart'
+        assert response.data['amountDue'] == '₾30.00'
+        payload = mock_client.create_order.call_args.args[0]
+        assert payload['amount'] == '30.00'
+        assert '/checkout/success?order=' in payload['successRedirectUri']
+        assert '/checkout/success?checkout=failed&order=' in payload['failRedirectUri']
+        transaction_obj = Transaction.objects.get(provider_order_id=response.data['orderId'])
+        assert transaction_obj.amount == Decimal('30.00')
+        assert transaction_obj.provider_payload['checkout']['bookIds'] == [book_one.id, book_two.id]
+        assert Order.objects.count() == 0
+
+    def test_cart_checkout_validation_failure_does_not_call_keepz(self):
+        with patch('apps.orders.views.KeepzClient') as mock_client_cls:
+            response = self.client.post('/orders/checkout/', {'books': []}, format='json')
+
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        mock_client_cls.assert_not_called()
+        assert Transaction.objects.count() == 0
+
+    def test_cart_checkout_status_success_finalizes_once(self):
+        self.buyer_wallet.balance = Decimal('20.00')
+        self.buyer_wallet.save()
+        book = Book.objects.create(title='Finalize Book', owner=self.author, price=Decimal('50.00'), status='published')
+        transaction_obj = Transaction.objects.create(
+            wallet=self.buyer_wallet,
+            type=Transaction.TYPE_DEPOSIT,
+            amount=Decimal('30.00'),
+            status=Transaction.STATUS_PENDING,
+            label='Cart checkout deficit',
+            provider=Transaction.PROVIDER_KEEPZ,
+            provider_order_id='checkout-order-1',
+            provider_status='INITIAL',
+            provider_payload={
+                'checkout': {
+                    'type': 'cart_deficit',
+                    'bookIds': [book.id],
+                    'cartTotal': '50.00',
+                    'walletBalanceAtCheckout': '20.00',
+                    'deficit': '30.00',
+                }
+            },
+        )
+
+        with patch('apps.orders.views.KeepzClient') as mock_client_cls:
+            mock_client = Mock()
+            mock_client.get_order_status.return_value = {'status': 'SUCCESS'}
+            mock_client_cls.return_value = mock_client
+            response = self.client.get('/orders/checkout/status/', {'order_id': 'checkout-order-1'})
+            duplicate = self.client.get('/orders/checkout/status/', {'order_id': 'checkout-order-1'})
+
+        assert response.status_code == status.HTTP_200_OK
+        assert duplicate.status_code == status.HTTP_200_OK
+        assert response.data['status'] == Order.STATUS_COMPLETED
+        assert Order.objects.filter(buyer=self.buyer, book=book).count() == 1
+        self.buyer_wallet.refresh_from_db()
+        self.author_wallet.refresh_from_db()
+        transaction_obj.refresh_from_db()
+        assert self.buyer_wallet.balance == Decimal('0.00')
+        assert self.author_wallet.balance == Decimal('50.00')
+        assert transaction_obj.provider_payload['checkout_result']['status'] == 'COMPLETED'
+
+    def test_cart_checkout_status_failed_does_not_create_orders(self):
+        book = Book.objects.create(title='Failed Book', owner=self.author, price=Decimal('50.00'), status='published')
+        Transaction.objects.create(
+            wallet=self.buyer_wallet,
+            type=Transaction.TYPE_DEPOSIT,
+            amount=Decimal('50.00'),
+            status=Transaction.STATUS_PENDING,
+            label='Cart checkout deficit',
+            provider=Transaction.PROVIDER_KEEPZ,
+            provider_order_id='checkout-order-failed',
+            provider_status='INITIAL',
+            provider_payload={'checkout': {'type': 'cart_deficit', 'bookIds': [book.id]}},
+        )
+
+        with patch('apps.orders.views.KeepzClient') as mock_client_cls:
+            mock_client = Mock()
+            mock_client.get_order_status.return_value = {'status': 'FAILED'}
+            mock_client_cls.return_value = mock_client
+            response = self.client.get('/orders/checkout/status/', {'order_id': 'checkout-order-failed'})
+
+        assert response.status_code == status.HTTP_200_OK
+        assert response.data['status'] == 'FAILED'
+        assert Order.objects.count() == 0
