@@ -113,7 +113,10 @@ class KeepzClient:
     def get_order_status(self, integrator_order_id: str) -> dict[str, Any]:
         response = requests.get(
             f'{self.config.base_url}/api/integrator/order/status',
-            params=self.encrypt_payload({'integratorOrderId': integrator_order_id}),
+            params=self.encrypt_payload({
+                'integratorId': self.config.integrator_id,
+                'integratorOrderId': integrator_order_id,
+            }),
             timeout=self.timeout,
         )
         return self._parse_response(response)

@@ -9,6 +9,7 @@ from django.contrib import admin
 from django.contrib import messages
 from django.db import transaction
 from django.db.models import F
+from django.utils import timezone
 
 from apps.wallet.keepz_client import KeepzClient, KeepzError
 from apps.wallet.models import Transaction, Wallet
@@ -158,6 +159,7 @@ class TransactionAdmin(admin.ModelAdmin):
                     Wallet.objects.filter(pk=txn.wallet_id).update(
                         balance=F('balance') + txn.amount,
                     )
+                    txn.credited_at = timezone.now()
                 elif txn.type == Transaction.TYPE_SALE:
                     Wallet.objects.filter(pk=txn.wallet_id).update(
                         balance=F('balance') + txn.amount,
@@ -170,7 +172,7 @@ class TransactionAdmin(admin.ModelAdmin):
                     )
 
                 txn.status = Transaction.STATUS_COMPLETED
-                txn.save(update_fields=['status'])
+                txn.save(update_fields=['status', 'credited_at'])
                 completed_count += 1
         
         self.message_user(

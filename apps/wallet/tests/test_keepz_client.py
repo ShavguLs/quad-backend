@@ -1,4 +1,5 @@
 import base64
+from unittest.mock import Mock, patch
 
 import pytest
 from cryptography.hazmat.primitives import serialization
@@ -103,3 +104,23 @@ def test_plain_error_payload_raises_normalized_error():
     assert exc_info.value.status_code == '6056'
     assert exc_info.value.exception_group == 'PERMISSION'
     assert exc_info.value.message == 'Dynamic callback permission missing'
+
+
+def test_get_order_status_sends_integrator_id_with_order_id():
+    client = _build_client()
+    client.encrypt_payload = Mock(return_value={'encrypted': 'params'})
+    client._parse_response = Mock(return_value={'status': 'SUCCESS'})
+
+    with patch('apps.wallet.keepz_client.requests.get') as mock_get:
+        response = client.get_order_status('order-123')
+
+    assert response == {'status': 'SUCCESS'}
+    client.encrypt_payload.assert_called_once_with({
+        'integratorId': 'integrator-1',
+        'integratorOrderId': 'order-123',
+    })
+    mock_get.assert_called_once_with(
+        'https://gateway.dev.keepz.me/ecommerce-service/api/integrator/order/status',
+        params={'encrypted': 'params'},
+        timeout=15,
+    )
