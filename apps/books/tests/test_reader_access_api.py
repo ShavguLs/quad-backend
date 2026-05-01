@@ -1,5 +1,6 @@
 from unittest.mock import patch
 from datetime import timedelta
+from urllib.parse import urlsplit
 
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase
@@ -193,8 +194,16 @@ class ReaderAccessApiTests(TestCase):
         self.assertTrue(response.data["can_read"])
         self.assertFalse(response.data["can_download"])
         self.assertIsNotNone(response.data["document_url"])
+        self.assertIn("token=", response.data["document_url"])
         self.assertIsNone(response.data["download_url"])
 
+        document_url = urlsplit(response.data["document_url"])
+        self.client.force_authenticate(None)
+        document_response = self.client.get(f"{document_url.path}?{document_url.query}")
+        self.assertEqual(document_response.status_code, 200)
+        self.assertEqual(_streaming_content(document_response), self.source_pdf_bytes)
+
+        self.client.force_authenticate(self.buyer)
         download_response = self.client.get(f"/books/{self.book.id}/read/download/")
         self.assertEqual(download_response.status_code, 403)
         self.assertEqual(download_response.data["code"], "download_not_allowed")

@@ -8,7 +8,9 @@ import io
 import logging
 
 from django.conf import settings
+from django.contrib.auth import get_user_model
 from django.core.cache import cache
+from django.core import signing
 from django.core.exceptions import ValidationError
 from django.core.files.base import ContentFile
 from django.db import IntegrityError, transaction
@@ -65,6 +67,7 @@ class BookViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticatedOrReadOnly, IsOwnerOrReadOnly]
     WATERMARK_CACHE_TIMEOUT = max(getattr(settings, "CACHE_DEFAULT_TIMEOUT", 300), 60 * 60 * 24)
     PREVIEW_PAGE_LIMIT = 10
+    READER_DOCUMENT_TOKEN_MAX_AGE = 60 * 60
 
     def get_queryset(self):
         """
@@ -186,11 +189,55 @@ class BookViewSet(viewsets.ModelViewSet):
     def _latest_source_file(book: Book) -> BookFile | None:
         return book.files.order_by("-uploaded_at").first()
 
-    def _build_reader_url(self, request, book: Book, endpoint: str, preview: bool = False) -> str:
+    def _reader_document_token(self, request, book: Book, book_file: BookFile, preview: bool = False) -> str:
+        signer = signing.TimestampSigner(salt="books.reader-document")
+        user_id = request.user.pk if request.user.is_authenticated else ""
+        return signer.sign(f"{book.pk}:{book_file.pk}:{int(preview)}:{user_id}")
+
+    def _has_valid_reader_document_token(self, request, book: Book, book_file: BookFile, preview: bool = False) -> bool:
+        token = request.query_params.get("token")
+        if not token:
+            return False
+
+        signer = signing.TimestampSigner(salt="books.reader-document")
+        try:
+            value = signer.unsign(token, max_age=self.READER_DOCUMENT_TOKEN_MAX_AGE)
+        except (signing.BadSignature, signing.SignatureExpired):
+            return False
+
+        parts = value.split(":")
+        if len(parts) != 4:
+            return False
+
+        token_book_id, token_file_id, token_preview, token_user_id = parts
+        if token_book_id != str(book.pk) or token_file_id != str(book_file.pk) or token_preview != str(int(preview)):
+            return False
+
+        if preview:
+            return True
+
+        if not token_user_id:
+            return False
+
+        User = get_user_model()
+        try:
+            token_user = User.objects.get(pk=token_user_id)
+        except User.DoesNotExist:
+            return False
+
+        _state, can_read, _can_download, _order = self._reader_access_state(book, token_user)
+        return can_read
+
+    def _build_reader_url(self, request, book: Book, endpoint: str, preview: bool = False, book_file: BookFile | None = None) -> str:
         base_path = request.path.split("/read/", 1)[0].rstrip("/")
         url = request.build_absolute_uri(f"{base_path}/read/{endpoint}/")
+        params = []
         if preview:
-            return f"{url}?preview=1"
+            params.append("preview=1")
+        if endpoint == "document" and book_file is not None:
+            params.append(f"token={self._reader_document_token(request, book, book_file, preview)}")
+        if params:
+            return f"{url}?{'&'.join(params)}"
         return url
 
     def _reader_access_state(self, book: Book, user) -> tuple[str, bool, bool, Order | None]:
@@ -560,14 +607,14 @@ class BookViewSet(viewsets.ModelViewSet):
                     True,
                     False,
                     None,
-                    self._build_reader_url(request, book, "document", preview=True),
+                    self._build_reader_url(request, book, "document", preview=True, book_file=latest_file),
                     None,
                 )
             )
 
         state, can_read, can_download, order = self._reader_access_state(book, request.user)
         expires_at = order.expires_at if order else None
-        document_url = self._build_reader_url(request, book, "document") if can_read else None
+        document_url = self._build_reader_url(request, book, "document", book_file=latest_file) if can_read else None
         download_url = self._build_reader_url(request, book, "download") if can_download else None
         return Response(
             self._reader_access_payload(
@@ -607,6 +654,10 @@ class BookViewSet(viewsets.ModelViewSet):
 
         if is_preview_request:
             return self._preview_pdf_response(latest_file)
+
+        if self._has_valid_reader_document_token(request, book, latest_file):
+            filename = latest_file.original_filename or f"{book.slug or book.pk}.pdf"
+            return self._source_pdf_response(latest_file, filename)
 
         state, can_read, _can_download, _order = self._reader_access_state(book, request.user)
         if not can_read:
