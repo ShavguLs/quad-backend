@@ -236,6 +236,31 @@ class ReaderAccessApiTests(TestCase):
         self.assertEqual(token_response.status_code, 200)
         self.assertEqual(_streaming_content(token_response), self.source_pdf_bytes)
 
+    def test_reader_document_supports_byte_range_requests(self):
+        Order.objects.create(
+            buyer=self.buyer,
+            book=self.book,
+            amount=self.book.price,
+            status=Order.STATUS_COMPLETED,
+            expires_at=timezone.now() + timedelta(days=180),
+        )
+        self.client.force_authenticate(self.buyer)
+
+        response = self.client.get(f"/books/{self.book.id}/read/access/")
+        self.assertEqual(response.status_code, 200)
+        document_url = urlsplit(response.data["document_url"])
+
+        self.client.force_authenticate(None)
+        range_response = self.client.get(
+            f"{document_url.path}?{document_url.query}",
+            HTTP_RANGE="bytes=0-7",
+        )
+        self.assertEqual(range_response.status_code, 206)
+        self.assertEqual(range_response["Accept-Ranges"], "bytes")
+        self.assertEqual(range_response["Content-Length"], "8")
+        self.assertEqual(range_response["Content-Range"], f"bytes 0-7/{len(self.source_pdf_bytes)}")
+        self.assertEqual(_streaming_content(range_response), self.source_pdf_bytes[:8])
+
     def test_new_reader_scientific_buyer_download_is_watermarked(self):
         self.book.access_type = Book.ACCESS_TYPE_SCIENTIFIC
         self.book.save(update_fields=["access_type"])

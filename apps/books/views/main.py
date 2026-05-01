@@ -15,9 +15,10 @@ from django.core.exceptions import ValidationError
 from django.core.files.base import ContentFile
 from django.db import IntegrityError, transaction
 from django.db.models import F, Q
-from django.http import FileResponse
+from django.http import FileResponse, HttpResponse, StreamingHttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
+from django.utils.http import content_disposition_header
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated, IsAuthenticatedOrReadOnly
@@ -68,6 +69,7 @@ class BookViewSet(viewsets.ModelViewSet):
     WATERMARK_CACHE_TIMEOUT = max(getattr(settings, "CACHE_DEFAULT_TIMEOUT", 300), 60 * 60 * 24)
     PREVIEW_PAGE_LIMIT = 10
     READER_DOCUMENT_TOKEN_MAX_AGE = 60 * 60
+    PDF_CHUNK_SIZE = 1024 * 64
 
     def get_queryset(self):
         """
@@ -301,18 +303,92 @@ class BookViewSet(viewsets.ModelViewSet):
             logger.exception("Failed to generate preview PDF for book file %s", book_file.pk)
             return False
 
-    def _source_pdf_response(self, book_file: BookFile, filename: str, as_attachment: bool = False):
-        file_handle = book_file.file.open("rb")
-        return FileResponse(file_handle, content_type="application/pdf", as_attachment=as_attachment, filename=filename)
+    @staticmethod
+    def _parse_byte_range(range_header: str, file_size: int) -> tuple[int, int] | str | None:
+        if not range_header.startswith("bytes="):
+            return None
 
-    def _preview_pdf_response(self, book_file: BookFile):
+        range_value = range_header.removeprefix("bytes=").strip()
+        if "," in range_value or "-" not in range_value:
+            return "invalid"
+
+        start_value, end_value = range_value.split("-", 1)
+        try:
+            if start_value == "":
+                suffix_length = int(end_value)
+                if suffix_length <= 0:
+                    return "invalid"
+                start = max(file_size - suffix_length, 0)
+                end = file_size - 1
+            else:
+                start = int(start_value)
+                end = int(end_value) if end_value else file_size - 1
+        except ValueError:
+            return "invalid"
+
+        if start < 0 or end < start:
+            return "invalid"
+        if start >= file_size:
+            return "unsatisfiable"
+
+        return start, min(end, file_size - 1)
+
+    def _stream_file_range(self, file_handle, start: int, length: int):
+        try:
+            file_handle.seek(start)
+            remaining = length
+            while remaining > 0:
+                chunk = file_handle.read(min(self.PDF_CHUNK_SIZE, remaining))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+                yield chunk
+        finally:
+            file_handle.close()
+
+    def _private_pdf_response(self, field_file, request, filename: str, as_attachment: bool = False):
+        file_size = field_file.size
+        range_header = request.META.get("HTTP_RANGE")
+        disposition = content_disposition_header(as_attachment, filename)
+
+        if range_header:
+            byte_range = self._parse_byte_range(range_header, file_size)
+            if byte_range == "unsatisfiable":
+                response = HttpResponse(status=416)
+                response["Content-Range"] = f"bytes */{file_size}"
+                response["Accept-Ranges"] = "bytes"
+                return response
+            if byte_range != "invalid" and byte_range is not None:
+                start, end = byte_range
+                content_length = end - start + 1
+                response = StreamingHttpResponse(
+                    self._stream_file_range(field_file.open("rb"), start, content_length),
+                    status=206,
+                    content_type="application/pdf",
+                )
+                response["Content-Length"] = str(content_length)
+                response["Content-Range"] = f"bytes {start}-{end}/{file_size}"
+                response["Accept-Ranges"] = "bytes"
+                if disposition:
+                    response["Content-Disposition"] = disposition
+                return response
+
+        file_handle = field_file.open("rb")
+        response = FileResponse(file_handle, content_type="application/pdf", as_attachment=as_attachment, filename=filename)
+        response["Accept-Ranges"] = "bytes"
+        return response
+
+    def _source_pdf_response(self, request, book_file: BookFile, filename: str, as_attachment: bool = False):
+        return self._private_pdf_response(book_file.file, request, filename, as_attachment=as_attachment)
+
+    def _preview_pdf_response(self, request, book_file: BookFile):
         if not self._ensure_preview_file(book_file) or not book_file.preview_file:
             return Response(
                 {"code": "preview_not_ready", "detail": "Preview is not ready."},
                 status=status.HTTP_404_NOT_FOUND,
             )
-        file_handle = book_file.preview_file.open("rb")
-        return FileResponse(file_handle, content_type="application/pdf", filename=f"{book_file.book.slug or book_file.book_id}-preview.pdf")
+        filename = f"{book_file.book.slug or book_file.book_id}-preview.pdf"
+        return self._private_pdf_response(book_file.preview_file, request, filename)
 
     def _watermarked_pdf_response(self, book: Book, book_file: BookFile, order: Order, user):
         try:
@@ -658,11 +734,11 @@ class BookViewSet(viewsets.ModelViewSet):
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
 
         if is_preview_request:
-            return self._preview_pdf_response(latest_file)
+            return self._preview_pdf_response(request, latest_file)
 
         if token_user_id is not None:
             filename = latest_file.original_filename or f"{book.slug or book.pk}.pdf"
-            return self._source_pdf_response(latest_file, filename)
+            return self._source_pdf_response(request, latest_file, filename)
 
         state, can_read, _can_download, _order = self._reader_access_state(book, request.user)
         if not can_read:
@@ -670,7 +746,7 @@ class BookViewSet(viewsets.ModelViewSet):
             return Response({"code": code, "detail": "Reader access is not allowed."}, status=status.HTTP_403_FORBIDDEN)
 
         filename = latest_file.original_filename or f"{book.slug or book.pk}.pdf"
-        return self._source_pdf_response(latest_file, filename)
+        return self._source_pdf_response(request, latest_file, filename)
 
     @action(
         detail=True,
@@ -690,7 +766,7 @@ class BookViewSet(viewsets.ModelViewSet):
 
         if self._is_owner(book, request.user):
             filename = latest_file.original_filename or f"{book.slug or book.pk}.pdf"
-            return self._source_pdf_response(latest_file, filename, as_attachment=True)
+            return self._source_pdf_response(request, latest_file, filename, as_attachment=True)
 
         state, can_read, can_download, order = self._reader_access_state(book, request.user)
         if not can_read:
