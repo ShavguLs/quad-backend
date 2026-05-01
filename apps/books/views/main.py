@@ -194,39 +194,42 @@ class BookViewSet(viewsets.ModelViewSet):
         user_id = request.user.pk if request.user.is_authenticated else ""
         return signer.sign(f"{book.pk}:{book_file.pk}:{int(preview)}:{user_id}")
 
-    def _has_valid_reader_document_token(self, request, book: Book, book_file: BookFile, preview: bool = False) -> bool:
+    def _reader_document_token_user_id(self, request, book: Book, book_file: BookFile, preview: bool = False) -> str | None:
         token = request.query_params.get("token")
         if not token:
-            return False
+            return None
 
         signer = signing.TimestampSigner(salt="books.reader-document")
         try:
             value = signer.unsign(token, max_age=self.READER_DOCUMENT_TOKEN_MAX_AGE)
         except (signing.BadSignature, signing.SignatureExpired):
-            return False
+            return None
 
         parts = value.split(":")
         if len(parts) != 4:
-            return False
+            return None
 
         token_book_id, token_file_id, token_preview, token_user_id = parts
         if token_book_id != str(book.pk) or token_file_id != str(book_file.pk) or token_preview != str(int(preview)):
-            return False
+            return None
 
         if preview:
-            return True
+            return token_user_id
 
         if not token_user_id:
-            return False
+            return None
 
         User = get_user_model()
         try:
             token_user = User.objects.get(pk=token_user_id)
         except User.DoesNotExist:
-            return False
+            return None
 
         _state, can_read, _can_download, _order = self._reader_access_state(book, token_user)
-        return can_read
+        return token_user_id if can_read else None
+
+    def _has_valid_reader_document_token(self, request, book: Book, book_file: BookFile, preview: bool = False) -> bool:
+        return self._reader_document_token_user_id(request, book, book_file, preview) is not None
 
     def _build_reader_url(self, request, book: Book, endpoint: str, preview: bool = False, book_file: BookFile | None = None) -> str:
         base_path = request.path.split("/read/", 1)[0].rstrip("/")
@@ -638,12 +641,9 @@ class BookViewSet(viewsets.ModelViewSet):
     )
     def read_document(self, request, pk=None):
         """Serve the private PDF document after reader access checks."""
-        book = self.get_object()
+        book = get_object_or_404(Book.objects.select_related("owner"), pk=pk)
         is_preview_request = self._is_preview_request(request)
         is_owner = self._is_owner(book, request.user)
-
-        if not is_owner and (book.status != "published" or not book.is_visible):
-            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
 
         latest_file = self._latest_source_file(book)
         if latest_file is None:
@@ -652,10 +652,15 @@ class BookViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
+        token_user_id = self._reader_document_token_user_id(request, book, latest_file, is_preview_request)
+        token_is_owner = token_user_id == str(book.owner_id)
+        if not is_owner and (book.status != "published" or not book.is_visible) and not token_is_owner:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
         if is_preview_request:
             return self._preview_pdf_response(latest_file)
 
-        if self._has_valid_reader_document_token(request, book, latest_file):
+        if token_user_id is not None:
             filename = latest_file.original_filename or f"{book.slug or book.pk}.pdf"
             return self._source_pdf_response(latest_file, filename)
 

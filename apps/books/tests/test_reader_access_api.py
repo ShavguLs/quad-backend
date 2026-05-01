@@ -208,6 +208,34 @@ class ReaderAccessApiTests(TestCase):
         self.assertEqual(download_response.status_code, 403)
         self.assertEqual(download_response.data["code"], "download_not_allowed")
 
+    def test_owner_draft_document_token_works_without_session_cookies(self):
+        draft_book = self._create_draft_book()
+        BookFile.objects.create(
+            book=draft_book,
+            file=SimpleUploadedFile(
+                "owner-draft.pdf",
+                self.source_pdf_bytes,
+                content_type="application/pdf",
+            ),
+            original_filename="owner-draft.pdf",
+            file_size=len(self.source_pdf_bytes),
+            mime_type="application/pdf",
+        )
+        self.client.force_authenticate(self.owner)
+
+        response = self.client.get(f"/books/{draft_book.id}/read/access/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["status"], "ready")
+        document_url = urlsplit(response.data["document_url"])
+
+        self.client.force_authenticate(None)
+        direct_response = self.client.get(f"/books/{draft_book.id}/read/document/")
+        self.assertEqual(direct_response.status_code, 404)
+
+        token_response = self.client.get(f"{document_url.path}?{document_url.query}")
+        self.assertEqual(token_response.status_code, 200)
+        self.assertEqual(_streaming_content(token_response), self.source_pdf_bytes)
+
     def test_new_reader_scientific_buyer_download_is_watermarked(self):
         self.book.access_type = Book.ACCESS_TYPE_SCIENTIFIC
         self.book.save(update_fields=["access_type"])
