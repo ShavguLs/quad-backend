@@ -32,7 +32,6 @@ class MyLibraryViewSet(viewsets.ReadOnlyModelViewSet):
         """Return all books owned or purchased by the current user."""
         return (
             Book.objects.select_related('owner')
-            .prefetch_related('files')
             .filter(
                 Q(owner=self.request.user)
                 | Q(
@@ -70,7 +69,7 @@ class PurchasedLibraryViewSet(viewsets.ReadOnlyModelViewSet):
         return Book.objects.filter(
             id__in=purchased_book_ids,
             status='published'
-        ).select_related('owner').prefetch_related('files')
+        ).select_related('owner')
 
 
 class UserLibraryViewSet(viewsets.ReadOnlyModelViewSet):
