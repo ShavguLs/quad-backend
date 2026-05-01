@@ -10,7 +10,9 @@ from django.contrib import messages
 from django.db import transaction
 from django.db.models import F
 
+from apps.wallet.keepz_client import KeepzClient, KeepzError
 from apps.wallet.models import Transaction, Wallet
+from apps.wallet.views import _credit_wallet_if_needed, _extract_keepz_status, _merge_provider_payload
 
 
 @admin.register(Wallet)
@@ -50,15 +52,84 @@ class TransactionAdmin(admin.ModelAdmin):
         'type',
         'amount',
         'status',
+        'provider',
+        'provider_status',
+        'credited_at',
         'label',
         'created_at',
     ]
-    list_filter = ['type', 'status', 'created_at']
-    search_fields = ['wallet__user__email', 'label']
-    fields = ['wallet', 'type', 'amount', 'status', 'label']
-    readonly_fields = ['created_at']
+    list_filter = ['type', 'status', 'provider', 'provider_status', 'created_at']
+    search_fields = ['wallet__user__email', 'label', 'provider_order_id']
+    fields = [
+        'wallet',
+        'type',
+        'amount',
+        'status',
+        'label',
+        'provider',
+        'provider_order_id',
+        'provider_status',
+        'provider_payload',
+        'credited_at',
+    ]
+    readonly_fields = ['created_at', 'credited_at']
     raw_id_fields = ['wallet']  # Better UX for wallet selection
-    actions = ['mark_completed', 'mark_failed', 'refund_transaction']
+    actions = ['reconcile_keepz_deposits', 'mark_completed', 'mark_failed', 'refund_transaction']
+
+    @admin.action(description='Verify selected Keepz deposits and update wallet')
+    def reconcile_keepz_deposits(self, request, queryset):
+        keepz_transactions = queryset.filter(
+            type=Transaction.TYPE_DEPOSIT,
+            provider=Transaction.PROVIDER_KEEPZ,
+            provider_order_id__isnull=False,
+        )
+
+        if not keepz_transactions.exists():
+            self.message_user(
+                request,
+                'No Keepz deposit transactions with order IDs selected.',
+                messages.WARNING,
+            )
+            return
+
+        keepz_client = KeepzClient()
+        completed_count = 0
+        failed_count = 0
+        pending_count = 0
+        error_count = 0
+
+        for txn in keepz_transactions:
+            try:
+                keepz_response = keepz_client.get_order_status(txn.provider_order_id)
+            except KeepzError as exc:
+                error_count += 1
+                self.message_user(
+                    request,
+                    f'Keepz status check failed for {txn.provider_order_id}: {exc.message}',
+                    messages.WARNING,
+                )
+                continue
+
+            provider_status = _extract_keepz_status(keepz_response)
+            merged_payload = _merge_provider_payload(txn, 'admin_order_status', keepz_response)
+            updated_txn = _credit_wallet_if_needed(txn.pk, provider_status, merged_payload)
+
+            if updated_txn.status == Transaction.STATUS_COMPLETED:
+                completed_count += 1
+            elif updated_txn.status == Transaction.STATUS_FAILED:
+                failed_count += 1
+            else:
+                pending_count += 1
+
+        self.message_user(
+            request,
+            (
+                'Keepz reconciliation finished: '
+                f'{completed_count} completed, {pending_count} pending, '
+                f'{failed_count} failed, {error_count} errors.'
+            ),
+            messages.SUCCESS if error_count == 0 else messages.WARNING,
+        )
 
     @admin.action(description='Mark selected transactions as COMPLETED')
     def mark_completed(self, request, queryset):
