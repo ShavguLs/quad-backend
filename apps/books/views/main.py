@@ -4,8 +4,10 @@ from __future__ import annotations
 Views for the books app.
 """
 
+import html
 import io
 import logging
+import mimetypes
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
@@ -32,6 +34,7 @@ from apps.books.models import (
     PageNote,
     SavedPage,
     ReadingPosition,
+    BookContent,
 )
 from apps.books.permissions import IsOwnerOrReadOnly
 from apps.books.audit import service as audit_service
@@ -48,6 +51,7 @@ from apps.books.publish import (
     DraftChangedError,
     PublishError,
 )
+from apps.books.storage import PrivateMediaStorage
 from apps.books.validators import validate_file_type
 
 logger = logging.getLogger(__name__)
@@ -272,8 +276,56 @@ class BookViewSet(viewsets.ModelViewSet):
             "can_download": can_download,
             "expires_at": expires_at.isoformat() if expires_at else None,
             "preview_pages": self.PREVIEW_PAGE_LIMIT,
+            "total_pages": book.total_pages or 0,
             "document_url": document_url,
             "download_url": download_url,
+        }
+
+    @staticmethod
+    def _render_block_html(block: dict) -> str:
+        metadata = block.get("metadata") if isinstance(block.get("metadata"), dict) else {}
+        render_html = metadata.get("render_html")
+        if isinstance(render_html, str) and render_html.strip():
+            return render_html
+
+        text = html.escape(str(block.get("text") or block.get("content") or ""))
+        block_type = block.get("type")
+        if block_type == "heading":
+            attrs = block.get("attrs") if isinstance(block.get("attrs"), dict) else {}
+            level = attrs.get("level", 2)
+            try:
+                level = min(max(int(level), 1), 6)
+            except (TypeError, ValueError):
+                level = 2
+            return f"<h{level}>{text}</h{level}>"
+        if block_type == "list_item":
+            return f"<li>{text}</li>"
+        if block_type == "page_break":
+            return "<hr />"
+        return f"<p>{text}</p>"
+
+    def _reader_page_payload(self, request, page: BookContent, preview: bool) -> dict:
+        blocks = page.blocks or []
+        primary_metadata = {}
+        if blocks and isinstance(blocks[0].get("metadata"), dict):
+            primary_metadata = blocks[0]["metadata"]
+
+        render_mode = primary_metadata.get("render_mode") or "html"
+        fallback_image_path = primary_metadata.get("fallback_image_path")
+        query = "?preview=1" if preview else ""
+        image_url = (
+            request.build_absolute_uri(f"{request.path.split('/read/', 1)[0].rstrip('/')}/read/page-image/{page.page_number}/{query}")
+            if render_mode == "image" and fallback_image_path
+            else None
+        )
+
+        return {
+            "page_number": page.page_number,
+            "render_mode": "image" if image_url else "html",
+            "html": "\n".join(self._render_block_html(block) for block in blocks),
+            "image_url": image_url,
+            "page_width": primary_metadata.get("page_width"),
+            "page_height": primary_metadata.get("page_height"),
         }
 
     def _ensure_preview_file(self, book_file: BookFile) -> bool:
@@ -779,6 +831,102 @@ class BookViewSet(viewsets.ModelViewSet):
             )
 
         return self._watermarked_pdf_response(book, latest_file, order, request.user)
+
+    @action(
+        detail=True,
+        methods=["get"],
+        url_path="read/pages",
+        permission_classes=[IsAuthenticatedOrReadOnly],
+    )
+    def read_pages(self, request, pk=None):
+        """Return lightweight reader pages for fast, virtualized rendering."""
+        book = get_object_or_404(Book.objects.select_related("owner"), pk=pk)
+        is_preview_request = self._is_preview_request(request)
+        is_owner = self._is_owner(book, request.user)
+
+        if not is_owner and (book.status != "published" or not book.is_visible):
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if not is_preview_request:
+            state, can_read, _can_download, _order = self._reader_access_state(book, request.user)
+            if not can_read:
+                code = "access_expired" if state == "expired" else "purchase_required"
+                return Response({"code": code, "detail": "Reader access is not allowed."}, status=status.HTTP_403_FORBIDDEN)
+
+        try:
+            start = int(request.query_params.get("start", "1"))
+            end = int(request.query_params.get("end", str(start + 4)))
+        except (TypeError, ValueError):
+            return Response(
+                {"detail": "start and end must be positive integers."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if start < 1 or end < start:
+            return Response(
+                {"detail": "start and end must be positive integers."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        max_end = min(book.total_pages or end, self.PREVIEW_PAGE_LIMIT) if is_preview_request else (book.total_pages or end)
+        end = min(end, max_end, start + 9)
+        pages = BookContent.objects.filter(
+            book=book,
+            page_number__gte=start,
+            page_number__lte=end,
+        ).order_by("page_number")
+
+        return Response(
+            {
+                "book_id": book.pk,
+                "total_pages": min(book.total_pages or pages.count(), self.PREVIEW_PAGE_LIMIT) if is_preview_request else (book.total_pages or pages.count()),
+                "preview": is_preview_request,
+                "pages": [self._reader_page_payload(request, page, is_preview_request) for page in pages],
+            }
+        )
+
+    @action(
+        detail=True,
+        methods=["get"],
+        url_path=r"read/page-image/(?P<page_number>\d+)",
+        permission_classes=[IsAuthenticatedOrReadOnly],
+    )
+    def read_page_image(self, request, pk=None, page_number=None):
+        """Serve a rasterized reader page image for exact-visual books."""
+        book = get_object_or_404(Book.objects.select_related("owner"), pk=pk)
+        is_preview_request = self._is_preview_request(request)
+        is_owner = self._is_owner(book, request.user)
+
+        if not is_owner and (book.status != "published" or not book.is_visible):
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if not is_preview_request:
+            state, can_read, _can_download, _order = self._reader_access_state(book, request.user)
+            if not can_read:
+                code = "access_expired" if state == "expired" else "purchase_required"
+                return Response({"code": code, "detail": "Reader access is not allowed."}, status=status.HTTP_403_FORBIDDEN)
+
+        try:
+            page_number_int = int(page_number)
+        except (TypeError, ValueError):
+            return Response({"detail": "Invalid page number."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if is_preview_request and page_number_int > self.PREVIEW_PAGE_LIMIT:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        page = get_object_or_404(BookContent, book=book, page_number=page_number_int)
+        blocks = page.blocks or []
+        metadata = blocks[0].get("metadata") if blocks and isinstance(blocks[0].get("metadata"), dict) else {}
+        fallback_image_path = metadata.get("fallback_image_path")
+        if not fallback_image_path:
+            return Response({"detail": "Page image is not available."}, status=status.HTTP_404_NOT_FOUND)
+
+        storage = PrivateMediaStorage()
+        file_handle = storage.open(fallback_image_path, "rb")
+        content_type = mimetypes.guess_type(fallback_image_path)[0] or "image/jpeg"
+        response = FileResponse(file_handle, content_type=content_type)
+        response["Cache-Control"] = "private, max-age=3600"
+        return response
 
     @action(detail=False, methods=["get"], url_path="featured")
     def featured(self, request):

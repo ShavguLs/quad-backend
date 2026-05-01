@@ -261,6 +261,32 @@ class ReaderAccessApiTests(TestCase):
         self.assertEqual(range_response["Content-Range"], f"bytes 0-7/{len(self.source_pdf_bytes)}")
         self.assertEqual(_streaming_content(range_response), self.source_pdf_bytes[:8])
 
+    def test_reader_pages_returns_lightweight_page_window(self):
+        Order.objects.create(
+            buyer=self.buyer,
+            book=self.book,
+            amount=self.book.price,
+            status=Order.STATUS_COMPLETED,
+            expires_at=timezone.now() + timedelta(days=180),
+        )
+        self.client.force_authenticate(self.buyer)
+
+        response = self.client.get(f"/books/{self.book.id}/read/pages/?start=2&end=3")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["total_pages"], self.book.total_pages)
+        self.assertEqual([page["page_number"] for page in response.data["pages"]], [2, 3])
+        self.assertEqual(response.data["pages"][0]["render_mode"], "html")
+        self.assertIn("Page 2 text", response.data["pages"][0]["html"])
+
+    def test_reader_pages_preview_is_public_and_limited(self):
+        response = self.client.get(f"/books/{self.book.id}/read/pages/?preview=1&start=9&end=20")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["preview"])
+        self.assertEqual(response.data["total_pages"], 10)
+        self.assertEqual([page["page_number"] for page in response.data["pages"]], [9, 10])
+
     def test_new_reader_scientific_buyer_download_is_watermarked(self):
         self.book.access_type = Book.ACCESS_TYPE_SCIENTIFIC
         self.book.save(update_fields=["access_type"])

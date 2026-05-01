@@ -16,6 +16,7 @@ from pathlib import Path
 import ssl
 import dj_database_url
 import environ
+from corsheaders.defaults import default_headers
 
 # Initialize django-environ
 env = environ.Env()
@@ -279,6 +280,15 @@ CORS_ALLOWED_ORIGINS = env.list('CORS_ALLOWED_ORIGINS', default=[
     'http://www.quaduni.com',
 ])
 CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOW_HEADERS = list(default_headers) + [
+    'range',
+]
+CORS_EXPOSE_HEADERS = [
+    'Accept-Ranges',
+    'Content-Range',
+    'Content-Length',
+    'Content-Disposition',
+]
 CSRF_TRUSTED_ORIGINS = env.list('CSRF_TRUSTED_ORIGINS', default=CORS_ALLOWED_ORIGINS)
 CSRF_COOKIE_SECURE = env.bool('CSRF_COOKIE_SECURE', default=not DEBUG)
 CSRF_COOKIE_SAMESITE = env('CSRF_COOKIE_SAMESITE', default='None' if not DEBUG else 'Lax')
