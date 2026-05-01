@@ -11,37 +11,62 @@ class BookAdmin(admin.ModelAdmin):
     Admin interface for Book model.
 
     Provides full CRUD capabilities with organized fieldsets for better UX.
+    Auto-sets status='published' and owner to the current admin user on create.
     Satisfies ADM-01 (is_featured editable), ADM-02 (analytics fields editable),
     ADM-03 (commerce fields editable), and ADM-10 (search/filter/list display).
     """
-    # List view configuration
     list_display = [
-        'title', 'author', 'owner', 'status', 'price', 'category',
-        'is_featured', 'is_visible', 'created_at'
+        'title', 'author', 'status', 'price', 'category',
+        'access_type', 'is_featured', 'is_visible', 'created_at'
     ]
-    list_filter = ['status', 'is_featured', 'is_visible', 'category', 'created_at']
-    search_fields = ['title', 'author', 'category', 'owner__email', 'owner__handle']
+    list_filter = ['status', 'access_type', 'is_featured', 'is_visible', 'category', 'created_at']
+    search_fields = ['title', 'author', 'category']
     raw_id_fields = ['owner']
     readonly_fields = ['created_at', 'updated_at']
 
-    # Organized fieldsets for better admin UX
-    fieldsets = (
-        # Basic book information
+    add_fieldsets = (
         ('Basic Info', {
-            'fields': ('title', 'author', 'description', 'owner', 'cover_image'),
-            'description': 'Core book metadata and ownership information.'
+            'fields': ('title', 'author', 'description', 'cover_image', 'pdf_file'),
+            'description': 'Core book metadata.'
         }),
-        # Status, commerce, and feature flags
-        ('Status & Commerce', {
-            'fields': ('status', 'price', 'category', 'is_featured', 'is_visible'),
-            'description': 'Publication status, pricing, categorization, and feature flags.'
+        ('Publication & Catalog', {
+            'fields': ('price', 'category', 'access_type', 'is_featured', 'is_visible', 'status'),
+            'description': 'Publication status, pricing, categorization, and visibility.'
         }),
-        # Analytics fields - editable for manual corrections
         ('Analytics', {
             'fields': ('view_count', 'follower_count', 'revenue_total'),
             'description': 'Book statistics. Editable for manual corrections by superusers.'
         }),
     )
+
+    change_fieldsets = (
+        ('Basic Info', {
+            'fields': ('title', 'author', 'description', 'cover_image', 'pdf_file'),
+            'description': 'Core book metadata.'
+        }),
+        ('Publication & Catalog', {
+            'fields': ('price', 'category', 'access_type', 'is_featured', 'is_visible', 'status', 'owner'),
+            'description': 'Publication status, pricing, categorization, and visibility.'
+        }),
+        ('Analytics', {
+            'fields': ('view_count', 'follower_count', 'revenue_total'),
+            'description': 'Book statistics. Editable for manual corrections by superusers.'
+        }),
+    )
+
+    def get_fieldsets(self, request, obj=None):
+        if obj:
+            return self.change_fieldsets
+        return self.add_fieldsets
+
+    def get_changeform_initial_data(self, request):
+        return {'status': 'published'}
+
+    def save_model(self, request, obj, form, change):
+        if not change:
+            if not obj.owner_id:
+                obj.owner = request.user
+        super().save_model(request, obj, form, change)
 
     @admin.action(description='Hide selected books from public listings')
     def hide_books(self, request, queryset):
@@ -70,4 +95,3 @@ class BookFollowAdmin(admin.ModelAdmin):
     search_fields = ['book__title', 'user__email']
     raw_id_fields = ['book', 'user']
     readonly_fields = ['created_at']
-

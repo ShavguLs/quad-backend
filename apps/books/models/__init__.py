@@ -68,6 +68,11 @@ class Book(BookThemeMixin, models.Model):
         blank=True,
         null=True,
     )
+    pdf_file = models.FileField(
+        upload_to="books/pdfs/%Y/%m/",
+        blank=True,
+        null=True,
+    )
     # Commerce fields
     price = models.DecimalField(
         max_digits=10,
@@ -132,24 +137,28 @@ class Book(BookThemeMixin, models.Model):
         self.slug = build_book_slug(self.author, self.title)
 
         if self.pk:
-            # Check if this is an update and cover_image changed
             try:
                 old_instance = Book.objects.get(pk=self.pk)
                 if (
                     old_instance.cover_image
                     and old_instance.cover_image != self.cover_image
                 ):
-                    # Delete old cover image file
                     old_instance.cover_image.delete(save=False)
+                if (
+                    old_instance.pdf_file
+                    and old_instance.pdf_file != self.pdf_file
+                ):
+                    old_instance.pdf_file.delete(save=False)
             except Book.DoesNotExist:
                 pass
         super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):
         """Override delete to clean up associated files from storage."""
-        # Delete cover image if it exists
         if self.cover_image:
             self.cover_image.delete(save=False)
+        if self.pdf_file:
+            self.pdf_file.delete(save=False)
 
         super().delete(*args, **kwargs)
 
