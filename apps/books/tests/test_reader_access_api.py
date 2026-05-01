@@ -279,6 +279,30 @@ class ReaderAccessApiTests(TestCase):
         self.assertEqual(response.data["pages"][0]["render_mode"], "html")
         self.assertIn("Page 2 text", response.data["pages"][0]["html"])
 
+    def test_reader_uses_content_pages_when_book_total_is_stale(self):
+        self.book.total_pages = 1
+        self.book.save(update_fields=["total_pages"])
+        Order.objects.create(
+            buyer=self.buyer,
+            book=self.book,
+            amount=self.book.price,
+            status=Order.STATUS_COMPLETED,
+            expires_at=timezone.now() + timedelta(days=180),
+        )
+        self.client.force_authenticate(self.buyer)
+
+        access_response = self.client.get(f"/books/{self.book.id}/read/access/")
+        pages_response = self.client.get(f"/books/{self.book.id}/read/pages/?start=1&end=12")
+
+        self.assertEqual(access_response.status_code, 200)
+        self.assertEqual(access_response.data["total_pages"], 11)
+        self.assertEqual(pages_response.status_code, 200)
+        self.assertEqual(pages_response.data["total_pages"], 11)
+        self.assertEqual(
+            [page["page_number"] for page in pages_response.data["pages"]],
+            list(range(1, 12)),
+        )
+
     def test_reader_pages_do_not_send_unused_html_for_image_pages(self):
         Order.objects.create(
             buyer=self.buyer,

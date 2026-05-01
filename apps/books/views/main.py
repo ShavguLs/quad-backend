@@ -16,7 +16,7 @@ from django.core import signing
 from django.core.exceptions import ValidationError
 from django.core.files.base import ContentFile
 from django.db import IntegrityError, transaction
-from django.db.models import F, Q
+from django.db.models import F, Max, Q
 from django.http import FileResponse, HttpResponse, StreamingHttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -265,6 +265,7 @@ class BookViewSet(viewsets.ModelViewSet):
         return "ready", True, can_download, order
 
     def _reader_access_payload(self, request, book: Book, mode: str, state: str, can_read: bool, can_download: bool, expires_at, document_url: str | None, download_url: str | None):
+        total_pages = self._reader_total_pages(book)
         return {
             "book_id": book.pk,
             "title": book.title,
@@ -277,10 +278,15 @@ class BookViewSet(viewsets.ModelViewSet):
             "can_download": can_download,
             "expires_at": expires_at.isoformat() if expires_at else None,
             "preview_pages": self.PREVIEW_PAGE_LIMIT,
-            "total_pages": book.total_pages or 0,
+            "total_pages": total_pages,
             "document_url": document_url,
             "download_url": download_url,
         }
+
+    @staticmethod
+    def _reader_total_pages(book: Book) -> int:
+        content_total = book.content_pages.aggregate(max_page=Max("page_number"))["max_page"] or 0
+        return max(book.total_pages or 0, content_total)
 
     @staticmethod
     def _render_block_html(block: dict) -> str:
@@ -869,7 +875,8 @@ class BookViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        max_end = min(book.total_pages or end, self.PREVIEW_PAGE_LIMIT) if is_preview_request else (book.total_pages or end)
+        total_pages = self._reader_total_pages(book)
+        max_end = min(total_pages or end, self.PREVIEW_PAGE_LIMIT) if is_preview_request else (total_pages or end)
         end = min(end, max_end, start + self.READER_PAGE_WINDOW_LIMIT - 1)
         pages = BookContent.objects.filter(
             book=book,
@@ -880,7 +887,7 @@ class BookViewSet(viewsets.ModelViewSet):
         return Response(
             {
                 "book_id": book.pk,
-                "total_pages": min(book.total_pages or pages.count(), self.PREVIEW_PAGE_LIMIT) if is_preview_request else (book.total_pages or pages.count()),
+                "total_pages": min(total_pages or pages.count(), self.PREVIEW_PAGE_LIMIT) if is_preview_request else (total_pages or pages.count()),
                 "preview": is_preview_request,
                 "pages": [self._reader_page_payload(request, page, is_preview_request) for page in pages],
             }
