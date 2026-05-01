@@ -279,6 +279,38 @@ class ReaderAccessApiTests(TestCase):
         self.assertEqual(response.data["pages"][0]["render_mode"], "html")
         self.assertIn("Page 2 text", response.data["pages"][0]["html"])
 
+    def test_reader_pages_do_not_send_unused_html_for_image_pages(self):
+        Order.objects.create(
+            buyer=self.buyer,
+            book=self.book,
+            amount=self.book.price,
+            status=Order.STATUS_COMPLETED,
+            expires_at=timezone.now() + timedelta(days=180),
+        )
+        BookContent.objects.filter(book=self.book, page_number=4).update(
+            blocks=[
+                {
+                    "id": "blk_4_0",
+                    "type": "paragraph",
+                    "text": "Page 4 text",
+                    "metadata": {
+                        "render_mode": "image",
+                        "render_html": "<p>Large extracted HTML that is not needed for image pages</p>",
+                        "fallback_image_path": "reader_fallback/1/0004.jpg",
+                    },
+                }
+            ]
+        )
+        self.client.force_authenticate(self.buyer)
+
+        response = self.client.get(f"/books/{self.book.id}/read/pages/?start=4&end=4")
+
+        self.assertEqual(response.status_code, 200)
+        page = response.data["pages"][0]
+        self.assertEqual(page["render_mode"], "image")
+        self.assertEqual(page["html"], "")
+        self.assertIn("/read/page-image/4/", page["image_url"])
+
     def test_reader_pages_preview_is_public_and_limited(self):
         response = self.client.get(f"/books/{self.book.id}/read/pages/?preview=1&start=9&end=20")
 

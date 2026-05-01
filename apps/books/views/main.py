@@ -72,6 +72,7 @@ class BookViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticatedOrReadOnly, IsOwnerOrReadOnly]
     WATERMARK_CACHE_TIMEOUT = max(getattr(settings, "CACHE_DEFAULT_TIMEOUT", 300), 60 * 60 * 24)
     PREVIEW_PAGE_LIMIT = 10
+    READER_PAGE_WINDOW_LIMIT = 24
     READER_DOCUMENT_TOKEN_MAX_AGE = 60 * 60
     PDF_CHUNK_SIZE = 1024 * 64
 
@@ -322,7 +323,7 @@ class BookViewSet(viewsets.ModelViewSet):
         return {
             "page_number": page.page_number,
             "render_mode": "image" if image_url else "html",
-            "html": "\n".join(self._render_block_html(block) for block in blocks),
+            "html": "" if image_url else "\n".join(self._render_block_html(block) for block in blocks),
             "image_url": image_url,
             "page_width": primary_metadata.get("page_width"),
             "page_height": primary_metadata.get("page_height"),
@@ -869,7 +870,7 @@ class BookViewSet(viewsets.ModelViewSet):
             )
 
         max_end = min(book.total_pages or end, self.PREVIEW_PAGE_LIMIT) if is_preview_request else (book.total_pages or end)
-        end = min(end, max_end, start + 9)
+        end = min(end, max_end, start + self.READER_PAGE_WINDOW_LIMIT - 1)
         pages = BookContent.objects.filter(
             book=book,
             page_number__gte=start,
