@@ -7,8 +7,6 @@ Exports all views for the books app.
 from apps.books.views.main import (
     BookViewSet,
     PageNoteViewSet,
-    SavedPageViewSet,
-    ReadingPositionViewSet,
 )
 
 # Theme views (from 38-01)
@@ -20,8 +18,6 @@ __all__ = [
     # Main
     'BookViewSet',
     'PageNoteViewSet',
-    'SavedPageViewSet',
-    'ReadingPositionViewSet',
     # Theme
     'BookThemeViewSet',
 ]

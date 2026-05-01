@@ -5,36 +5,10 @@ from rest_framework import serializers
 
 from apps.books.models import (
     Book,
-    BookAuditLog,
-    BookFile,
     PageNote,
-    SavedPage,
-    ReadingPosition,
 )
 from apps.books.validators import validate_image
 from apps.orders.models import Order
-
-
-class BookFileSerializer(serializers.ModelSerializer):
-    """Serializer for book file metadata."""
-
-    download_url = serializers.SerializerMethodField()
-
-    class Meta:
-        model = BookFile
-        fields = [
-            "id",
-            "original_filename",
-            "file_size",
-            "mime_type",
-            "uploaded_at",
-            "download_url",
-        ]
-        read_only_fields = ["id", "uploaded_at"]
-
-    def get_download_url(self, obj):
-        # Raw file URLs are intentionally not exposed through public APIs.
-        return None
 
 
 class BookSerializer(serializers.ModelSerializer):
@@ -55,12 +29,6 @@ class BookSerializer(serializers.ModelSerializer):
     purchase_count = serializers.SerializerMethodField()
     access_expires_at = serializers.SerializerMethodField()
     access_is_expired = serializers.SerializerMethodField()
-
-    publish_status = serializers.CharField(read_only=True)
-    publish_error = serializers.CharField(read_only=True)
-    extraction_status = serializers.CharField(read_only=True)
-    extraction_error = serializers.SerializerMethodField()
-    is_readable = serializers.SerializerMethodField()
 
     class Meta:
         model = Book
@@ -84,11 +52,6 @@ class BookSerializer(serializers.ModelSerializer):
             "updated_at",
             "cover_image",
             "cover_image_url",
-            "publish_status",
-            "publish_error",
-            "extraction_status",
-            "extraction_error",
-            "is_readable",
             "coverUrl",
             "totalPages",
             "views",
@@ -115,11 +78,6 @@ class BookSerializer(serializers.ModelSerializer):
             "purchase_count",
             "access_expires_at",
             "access_is_expired",
-            "publish_status",
-            "publish_error",
-            "extraction_status",
-            "extraction_error",
-            "is_readable",
         ]
 
     def get_cover_image_url(self, obj):
@@ -169,21 +127,6 @@ class BookSerializer(serializers.ModelSerializer):
         order = self._get_user_order(obj)
         return bool(order and order.expires_at and order.expires_at <= timezone.now())
 
-    def get_extraction_error(self, obj):
-        request = self.context.get("request")
-        user = getattr(request, "user", None)
-        if user and user.is_authenticated and (user == obj.owner or user.is_staff):
-            return obj.extraction_error
-        return None
-
-    def get_is_readable(self, obj):
-        if obj.extraction_status not in {"completed", "partial"}:
-            return False
-        # Prefer total_pages as fast-path, then fallback to content existence.
-        if (obj.total_pages or 0) > 0:
-            return True
-        return obj.content_pages.exists()
-
     def create(self, validated_data):
         if validated_data.get("is_visible") is None:
             validated_data["is_visible"] = True
@@ -194,68 +137,6 @@ class BookSerializer(serializers.ModelSerializer):
         if cover_image:
             validate_image(cover_image)
         return super().update(instance, validated_data)
-
-
-class MyBookSerializer(serializers.ModelSerializer):
-    """Serializer for owner's books with analytics."""
-
-    coverUrl = serializers.SerializerMethodField()
-    price = serializers.SerializerMethodField()
-    revenue = serializers.SerializerMethodField()
-    views = serializers.SerializerMethodField()
-    owners = serializers.SerializerMethodField()
-    owners_count = serializers.IntegerField(read_only=True)
-    extraction_status = serializers.CharField(read_only=True)
-    extraction_error = serializers.CharField(read_only=True)
-    is_readable = serializers.SerializerMethodField()
-    total_pages = serializers.IntegerField(read_only=True)
-
-    class Meta:
-        model = Book
-        fields = [
-            "id",
-            "title",
-            "price",
-            "access_type",
-            "coverUrl",
-            "view_count",
-            "views",
-            "follower_count",
-            "owners_count",
-            "owners",
-            "revenue",
-            "extraction_status",
-            "extraction_error",
-            "is_readable",
-            "total_pages",
-        ]
-
-    def get_coverUrl(self, obj):
-        if obj.cover_image:
-            request = self.context.get("request")
-            if request:
-                return request.build_absolute_uri(obj.cover_image.url)
-            return obj.cover_image.url
-        return None
-
-    def get_price(self, obj):
-        return f"₾{obj.price}"
-
-    def get_revenue(self, obj):
-        return f"₾{obj.revenue_total}"
-
-    def get_views(self, obj):
-        return obj.view_count
-
-    def get_owners(self, obj):
-        return getattr(obj, "owners_count", 0)
-
-    def get_is_readable(self, obj):
-        if obj.extraction_status not in {"completed", "partial"}:
-            return False
-        if (obj.total_pages or 0) > 0:
-            return True
-        return obj.content_pages.exists()
 
 
 class PageNoteSerializer(serializers.ModelSerializer):
@@ -340,58 +221,3 @@ class PageNoteSerializer(serializers.ModelSerializer):
 
         return attrs
 
-
-class BookAuditLogSerializer(serializers.ModelSerializer):
-    """Serializer for audit log entries."""
-
-    bookId = serializers.IntegerField(source="book_id", read_only=True)
-    userId = serializers.IntegerField(source="user_id", read_only=True)
-    userEmail = serializers.SerializerMethodField()
-    action = serializers.CharField(read_only=True)
-    timestamp = serializers.DateTimeField(read_only=True)
-    details = serializers.JSONField(read_only=True)
-    ipAddress = serializers.CharField(
-        source="ip_address", read_only=True, allow_null=True
-    )
-
-    class Meta:
-        model = BookAuditLog
-        fields = [
-            "id",
-            "bookId",
-            "userId",
-            "userEmail",
-            "action",
-            "timestamp",
-            "details",
-            "ipAddress",
-        ]
-
-    def get_userEmail(self, obj):
-        if obj.user:
-            return obj.user.email
-        return None
-
-
-class SavedPageSerializer(serializers.ModelSerializer):
-    """Serializer for user-bookmarked reader pages."""
-
-    pageNumber = serializers.IntegerField(source="page_number", read_only=True)
-    createdAt = serializers.DateTimeField(source="created_at", read_only=True)
-
-    class Meta:
-        model = SavedPage
-        fields = ["id", "page_number", "created_at", "pageNumber", "createdAt"]
-        read_only_fields = ["id", "created_at", "pageNumber", "createdAt"]
-
-
-class ReadingPositionSerializer(serializers.ModelSerializer):
-    """Serializer for user's cross-device reading position."""
-
-    pageNumber = serializers.IntegerField(source="page_number", read_only=True)
-    updatedAt = serializers.DateTimeField(source="updated_at", read_only=True)
-
-    class Meta:
-        model = ReadingPosition
-        fields = ["id", "page_number", "updated_at", "pageNumber", "updatedAt"]
-        read_only_fields = ["id", "updated_at", "pageNumber", "updatedAt"]

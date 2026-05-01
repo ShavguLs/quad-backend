@@ -2,15 +2,7 @@
 
 from django.contrib import admin
 
-from .models import Book, BookAuditLog, BookFile, BookFollow, BookView
-
-
-class BookFileInline(admin.TabularInline):
-    """Inline admin for managing book files within Book admin."""
-    model = BookFile
-    extra = 0
-    fields = ['file', 'mime_type', 'original_filename', 'uploaded_at']
-    readonly_fields = ['mime_type', 'original_filename', 'uploaded_at']
+from .models import Book, BookFollow, BookView
 
 
 @admin.register(Book)
@@ -30,7 +22,6 @@ class BookAdmin(admin.ModelAdmin):
     list_filter = ['status', 'is_featured', 'is_visible', 'category', 'created_at']
     search_fields = ['title', 'author', 'category', 'owner__email', 'owner__handle']
     raw_id_fields = ['owner']
-    inlines = [BookFileInline]
     readonly_fields = ['created_at', 'updated_at']
 
     # Organized fieldsets for better admin UX
@@ -80,30 +71,3 @@ class BookFollowAdmin(admin.ModelAdmin):
     raw_id_fields = ['book', 'user']
     readonly_fields = ['created_at']
 
-
-@admin.register(BookAuditLog)
-class BookAuditLogAdmin(admin.ModelAdmin):
-    """
-    Admin interface for BookAuditLog.
-    
-    Read-only access to maintain append-only audit trail integrity.
-    """
-    list_display = ['book', 'user', 'action', 'timestamp', 'ip_address']
-    list_filter = ['action', 'timestamp', 'book']
-    search_fields = ['book__title', 'user__email']
-    raw_id_fields = ['book', 'user']
-    readonly_fields = ['book', 'user', 'action', 'timestamp', 'details', 'ip_address']
-    ordering = ['-timestamp']
-    date_hierarchy = 'timestamp'
-
-    def has_add_permission(self, request):
-        """Audit logs are created programmatically, not via admin."""
-        return False
-
-    def has_delete_permission(self, request, obj=None):
-        """Audit logs are append-only."""
-        return False
-
-    def has_change_permission(self, request, obj=None):
-        """Audit logs are immutable."""
-        return False

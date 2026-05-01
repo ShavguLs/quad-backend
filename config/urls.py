@@ -19,12 +19,10 @@ from django.conf.urls.static import static
 from django.contrib import admin
 from django.urls import include, path
 
-from apps.books.analytics_views import MyBooksAnalyticsView
 from config.sitemap import sitemap_xml
 
 urlpatterns = [
     path('sitemap.xml', sitemap_xml, name='sitemap-xml'),
-    path('me/books/', MyBooksAnalyticsView.as_view(), name='me-books'),
     path('admin/', admin.site.urls),
     path('auth/', include('apps.auth.urls')),
     path('blog/', include('apps.ads.urls')),
