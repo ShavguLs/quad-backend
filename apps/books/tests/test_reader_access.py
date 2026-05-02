@@ -146,3 +146,19 @@ def test_missing_pdf_returns_404(api_client, user1, db):
     url = reverse("book-read", args=[book.id])
     response = api_client.get(url)
     assert response.status_code == status.HTTP_404_NOT_FOUND
+
+def test_missing_pdf_file_on_storage_returns_404(api_client, user1, db):
+    book = Book.objects.create(
+        owner=user1,
+        title="Dangling PDF Book",
+        author="Author",
+        status="published",
+        access_type=Book.ACCESS_TYPE_EDUCATIONAL,
+        pdf_file="books/pdfs/missing.pdf",
+    )
+    api_client.force_authenticate(user=user1)
+
+    url = reverse("book-read", args=[book.id])
+    response = api_client.get(url)
+
+    assert response.status_code == status.HTTP_404_NOT_FOUND

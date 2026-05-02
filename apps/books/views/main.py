@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
+
 from django.core.cache import cache
 from django.db import IntegrityError
 from django.db.models import F, Q
+from django.http import FileResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import status, viewsets
@@ -14,6 +17,9 @@ from rest_framework.response import Response
 
 from apps.books.models import Book, BookFollow, BookView, PageNote
 from apps.books.serializers import BookSerializer, PageNoteSerializer
+
+
+logger = logging.getLogger(__name__)
 
 
 class BookViewSet(viewsets.ModelViewSet):
@@ -199,8 +205,14 @@ class BookViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        from django.http import FileResponse
-        response = FileResponse(book.pdf_file.open("rb"), content_type="application/pdf")
+        pdf_file = self._open_pdf_file(book)
+        if pdf_file is None:
+            return Response(
+                {"detail": "PDF file not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        response = FileResponse(pdf_file, content_type="application/pdf")
         response["Content-Disposition"] = f'inline; filename="{book.slug}.pdf"'
         return response
 
@@ -231,9 +243,46 @@ class BookViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        from django.http import FileResponse
-        response = FileResponse(book.pdf_file.open("rb"), content_type="application/pdf", as_attachment=True, filename=f"{book.slug}.pdf")
+        pdf_file = self._open_pdf_file(book)
+        if pdf_file is None:
+            return Response(
+                {"detail": "PDF file not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        response = FileResponse(
+            pdf_file,
+            content_type="application/pdf",
+            as_attachment=True,
+            filename=f"{book.slug}.pdf",
+        )
         return response
+
+    def _open_pdf_file(self, book):
+        try:
+            return book.pdf_file.open("rb")
+        except (FileNotFoundError, OSError) as exc:
+            logger.warning(
+                "Book PDF could not be opened",
+                extra={"book_id": book.pk, "pdf_file": book.pdf_file.name},
+                exc_info=True,
+            )
+            return None
+        except Exception as exc:
+            if not self._is_missing_pdf_storage_error(exc):
+                raise
+            logger.warning(
+                "Book PDF could not be opened",
+                extra={"book_id": book.pk, "pdf_file": book.pdf_file.name},
+                exc_info=True,
+            )
+            return None
+
+    def _is_missing_pdf_storage_error(self, exc):
+        error_response = getattr(exc, "response", {})
+        error = error_response.get("Error", {}) if isinstance(error_response, dict) else {}
+        return error.get("Code") in {"404", "NoSuchKey", "NotFound"}
+
 
 class PageNoteViewSet(viewsets.ViewSet):
     """ViewSet for creating, listing, and deleting page notes."""
