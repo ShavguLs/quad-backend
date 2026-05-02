@@ -279,6 +279,41 @@ class Chapter(models.Model):
         return f"{self.position}. {self.title}"
 
 
+class ReadingPosition(models.Model):
+    """Saves the last reading position for a user and a book."""
+
+    book = models.ForeignKey(
+        Book,
+        on_delete=models.CASCADE,
+        related_name="reading_positions",
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="reading_positions",
+    )
+    page_number = models.PositiveIntegerField()
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-updated_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "book"], name="reading_position_unique_user_book"
+            ),
+            models.CheckConstraint(
+                condition=models.Q(page_number__gte=1),
+                name="reading_position_page_number_gte_1",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["user", "book"], name="reading_position_user_book_idx"),
+        ]
+
+    def __str__(self) -> str:
+        return f"ReadingPosition by {self.user} on {self.book.title} p{self.page_number}"
+
+
 __all__ = [
     # Models
     "Book",
@@ -286,4 +321,5 @@ __all__ = [
     "BookFollow",
     "PageNote",
     "Chapter",
+    "ReadingPosition",
 ]

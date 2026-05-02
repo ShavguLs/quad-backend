@@ -6,6 +6,7 @@ from rest_framework import serializers
 from apps.books.models import (
     Book,
     PageNote,
+    ReadingPosition,
 )
 from apps.books.validators import validate_image
 from apps.orders.models import Order
@@ -155,6 +156,64 @@ class BookSerializer(serializers.ModelSerializer):
         if cover_image:
             validate_image(cover_image)
         return super().update(instance, validated_data)
+
+
+class ReadingPositionSerializer(serializers.ModelSerializer):
+    book_id = serializers.IntegerField(source="book.id", read_only=True)
+    page_number = serializers.IntegerField(min_value=1, required=True)
+    updated_at = serializers.DateTimeField(read_only=True)
+
+    bookId = serializers.SerializerMethodField()
+    pageNumber = serializers.SerializerMethodField()
+    updatedAt = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ReadingPosition
+        fields = [
+            "book_id",
+            "page_number",
+            "updated_at",
+            "bookId",
+            "pageNumber",
+            "updatedAt",
+        ]
+        read_only_fields = [
+            "book_id",
+            "updated_at",
+            "bookId",
+            "pageNumber",
+            "updatedAt",
+        ]
+
+    def get_bookId(self, obj):
+        return obj.book_id
+
+    def get_pageNumber(self, obj):
+        return obj.page_number
+
+    def get_updatedAt(self, obj):
+        return obj.updated_at
+
+    def validate(self, attrs):
+        request = self.context.get("request")
+        book = self.context.get("book")
+
+        if not book:
+            raise serializers.ValidationError({"book_id": "Book is required."})
+
+        if request and not book.can_user_access(request.user):
+            raise serializers.ValidationError(
+                {"book_id": "You do not have access to this book."}
+            )
+
+        page_number = attrs.get("page_number")
+        total_pages = book.total_pages or 0
+        if total_pages > 0 and page_number and page_number > total_pages:
+            raise serializers.ValidationError(
+                {"page_number": "Page number exceeds total pages."}
+            )
+
+        return attrs
 
 
 class PageNoteSerializer(serializers.ModelSerializer):

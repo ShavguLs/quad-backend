@@ -7,6 +7,7 @@ Exports all serializers for the books app.
 from apps.books.serializers.main import (
     BookSerializer,
     PageNoteSerializer,
+    ReadingPositionSerializer,
 )
 
 # Theme serializers (from 38-01)
@@ -18,6 +19,7 @@ __all__ = [
     # Main
     'BookSerializer',
     'PageNoteSerializer',
+    'ReadingPositionSerializer',
     # Theme
     'BookThemeSerializer',
 ]

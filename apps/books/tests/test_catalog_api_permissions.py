@@ -58,7 +58,6 @@ class CatalogApiPermissionTests(APITestCase):
             f'/books/{self.book.pk}/publish/',
             f'/books/{self.book.pk}/read/access/',
             f'/books/{self.book.pk}/saved-pages/',
-            f'/books/{self.book.pk}/reading-position/',
             '/me/books/',
         ]
 

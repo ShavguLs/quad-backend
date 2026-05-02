@@ -3,7 +3,7 @@
 from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 
-from apps.books.views import BookViewSet, PageNoteViewSet
+from apps.books.views import BookViewSet, PageNoteViewSet, ReadingPositionView
 from apps.books.views.theme import BookThemeViewSet
 
 router = DefaultRouter()
@@ -25,5 +25,10 @@ urlpatterns = [
         '<int:pk>/theme/',
         BookThemeViewSet.as_view({'get': 'get_theme'}),
         name='book-theme'
+    ),
+    path(
+        '<int:book_id>/reading-position/',
+        ReadingPositionView.as_view(),
+        name='book-reading-position',
     ),
 ]

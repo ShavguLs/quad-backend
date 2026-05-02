@@ -15,9 +15,10 @@ from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAdminUser, IsAuthenticated, IsAuthenticatedOrReadOnly
 from rest_framework.response import Response
+from rest_framework.views import APIView
 
-from apps.books.models import Book, BookFollow, BookView, PageNote
-from apps.books.serializers import BookSerializer, PageNoteSerializer
+from apps.books.models import Book, BookFollow, BookView, PageNote, ReadingPosition
+from apps.books.serializers import BookSerializer, PageNoteSerializer, ReadingPositionSerializer
 
 
 logger = logging.getLogger(__name__)
@@ -430,3 +431,64 @@ class PageNoteViewSet(viewsets.ViewSet):
 
         note.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class ReadingPositionView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, book_id):
+        book = get_object_or_404(
+            Book.objects.filter(status="published", is_visible=True) | Book.objects.filter(owner=request.user),
+            pk=book_id,
+        )
+        if not book.can_user_access(request.user):
+            return Response(
+                {"detail": "You do not have access to this book."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        position = ReadingPosition.objects.filter(
+            book=book, user=request.user
+        ).first()
+
+        if position:
+            serializer = ReadingPositionSerializer(
+                position, context={"request": request, "book": book}
+            )
+            return Response(serializer.data)
+
+        return Response({
+            "book_id": book.id,
+            "page_number": None,
+            "updated_at": None,
+            "bookId": book.id,
+            "pageNumber": None,
+            "updatedAt": None,
+        })
+
+    def patch(self, request, book_id):
+        book = get_object_or_404(
+            Book.objects.filter(status="published", is_visible=True) | Book.objects.filter(owner=request.user),
+            pk=book_id,
+        )
+        if not book.can_user_access(request.user):
+            return Response(
+                {"detail": "You do not have access to this book."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        serializer = ReadingPositionSerializer(
+            data=request.data, context={"request": request, "book": book}
+        )
+        serializer.is_valid(raise_exception=True)
+
+        position, _ = ReadingPosition.objects.update_or_create(
+            book=book,
+            user=request.user,
+            defaults={"page_number": serializer.validated_data["page_number"]},
+        )
+
+        output = ReadingPositionSerializer(
+            position, context={"request": request, "book": book}
+        )
+        return Response(output.data)
