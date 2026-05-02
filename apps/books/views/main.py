@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import logging
+import re
 
 from django.core.cache import cache
 from django.db import IntegrityError
 from django.db.models import F, Q
-from django.http import FileResponse
+from django.http import FileResponse, HttpResponse, StreamingHttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import status, viewsets
@@ -212,8 +213,31 @@ class BookViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
+        file_size = book.pdf_file.size
+        range_header = request.META.get("HTTP_RANGE")
+        
+        if range_header:
+            parsed_range = self._parse_range_header(range_header, file_size)
+            if parsed_range == "416":
+                response = HttpResponse(status=416)
+                response["Content-Range"] = f"bytes */{file_size}"
+                response["Accept-Ranges"] = "bytes"
+                pdf_file.close()
+                return response
+            elif parsed_range:
+                start, end = parsed_range
+                iterator = self._ranged_file_iterator(pdf_file, start, end)
+                response = StreamingHttpResponse(iterator, status=206, content_type="application/pdf")
+                response["Content-Range"] = f"bytes {start}-{end}/{file_size}"
+                response["Content-Length"] = str(end - start + 1)
+                response["Accept-Ranges"] = "bytes"
+                response["Content-Disposition"] = f'inline; filename="{book.slug}.pdf"'
+                return response
+
         response = FileResponse(pdf_file, content_type="application/pdf")
         response["Content-Disposition"] = f'inline; filename="{book.slug}.pdf"'
+        response["Accept-Ranges"] = "bytes"
+        response["Content-Length"] = str(file_size)
         return response
 
     @action(
@@ -257,6 +281,47 @@ class BookViewSet(viewsets.ModelViewSet):
             filename=f"{book.slug}.pdf",
         )
         return response
+
+    def _parse_range_header(self, range_header, file_size):
+        if not range_header or not range_header.startswith("bytes="):
+            return None
+        ranges = range_header.replace("bytes=", "").split(",")
+        if len(ranges) != 1:
+            return None
+        range_str = ranges[0].strip()
+        match = re.match(r"^(-?\d*)-(-?\d*)$", range_str)
+        if not match:
+            return None
+        start_str, end_str = match.groups()
+        if not start_str and not end_str:
+            return None
+        if not start_str:
+            suffix_length = int(end_str)
+            start = max(0, file_size - suffix_length)
+            end = file_size - 1
+        elif not end_str:
+            start = int(start_str)
+            end = file_size - 1
+        else:
+            start = int(start_str)
+            end = min(int(end_str), file_size - 1)
+        if start >= file_size or start > end:
+            return "416"
+        return start, end
+
+    def _ranged_file_iterator(self, file_obj, start, end, chunk_size=8192):
+        try:
+            file_obj.seek(start)
+            bytes_remaining = end - start + 1
+            while bytes_remaining > 0:
+                bytes_to_read = min(chunk_size, bytes_remaining)
+                chunk = file_obj.read(bytes_to_read)
+                if not chunk:
+                    break
+                yield chunk
+                bytes_remaining -= len(chunk)
+        finally:
+            file_obj.close()
 
     def _open_pdf_file(self, book):
         try:

@@ -106,6 +106,50 @@ def test_scientific_buyer_can_download(api_client, user2, sci_book):
     assert response.get("Content-Type") == "application/pdf"
     assert "attachment" in response.get("Content-Disposition")
 
+def test_educational_buyer_can_range_read(api_client, user2, edu_book):
+    Order.objects.create(buyer=user2, book=edu_book, status=Order.STATUS_COMPLETED, amount=0)
+    api_client.force_authenticate(user=user2)
+    url = reverse("book-read", args=[edu_book.id])
+    
+    # Test valid range
+    response = api_client.get(url, HTTP_RANGE="bytes=2-6")
+    assert response.status_code == status.HTTP_206_PARTIAL_CONTENT
+    assert response.get("Content-Range") == "bytes 2-6/13"
+    assert response.get("Content-Length") == "5"
+    assert response.get("Accept-Ranges") == "bytes"
+    assert b"".join(response.streaming_content) == b"DF-1."
+
+def test_unauthorized_user_cannot_range_read(api_client, user2, edu_book):
+    api_client.force_authenticate(user=user2)
+    url = reverse("book-read", args=[edu_book.id])
+    response = api_client.get(url, HTTP_RANGE="bytes=2-6")
+    assert response.status_code == status.HTTP_403_FORBIDDEN
+
+def test_unauthenticated_cannot_range_read(api_client, edu_book):
+    url = reverse("book-read", args=[edu_book.id])
+    response = api_client.get(url, HTTP_RANGE="bytes=2-6")
+    assert response.status_code == status.HTTP_403_FORBIDDEN
+
+def test_invalid_range_returns_416(api_client, user2, edu_book):
+    Order.objects.create(buyer=user2, book=edu_book, status=Order.STATUS_COMPLETED, amount=0)
+    api_client.force_authenticate(user=user2)
+    url = reverse("book-read", args=[edu_book.id])
+    
+    response = api_client.get(url, HTTP_RANGE="bytes=20-30")
+    assert response.status_code == status.HTTP_416_REQUESTED_RANGE_NOT_SATISFIABLE
+    assert response.get("Content-Range") == "bytes */13"
+
+def test_open_ended_range(api_client, user2, edu_book):
+    Order.objects.create(buyer=user2, book=edu_book, status=Order.STATUS_COMPLETED, amount=0)
+    api_client.force_authenticate(user=user2)
+    url = reverse("book-read", args=[edu_book.id])
+    
+    response = api_client.get(url, HTTP_RANGE="bytes=10-")
+    assert response.status_code == status.HTTP_206_PARTIAL_CONTENT
+    assert response.get("Content-Range") == "bytes 10-12/13"
+    assert response.get("Content-Length") == "3"
+    assert b"".join(response.streaming_content) == b"EOF"
+
 def test_expired_educational_buyer_cannot_read(api_client, user2, edu_book):
     expired_time = timezone.now() - timedelta(days=1)
     Order.objects.create(buyer=user2, book=edu_book, status=Order.STATUS_COMPLETED, expires_at=expired_time, amount=0)
