@@ -32,6 +32,8 @@ class BookViewSet(viewsets.ModelViewSet):
     def get_permissions(self):
         if self.action in {"create", "update", "partial_update", "destroy"}:
             return [IsAdminUser()]
+        if self.action in {"read", "download"}:
+            return [IsAuthenticated()]
         return [IsAuthenticatedOrReadOnly()]
 
     def get_queryset(self):
@@ -295,16 +297,19 @@ class BookViewSet(viewsets.ModelViewSet):
         start_str, end_str = match.groups()
         if not start_str and not end_str:
             return None
-        if not start_str:
-            suffix_length = int(end_str)
-            start = max(0, file_size - suffix_length)
-            end = file_size - 1
-        elif not end_str:
-            start = int(start_str)
-            end = file_size - 1
-        else:
-            start = int(start_str)
-            end = min(int(end_str), file_size - 1)
+        try:
+            if not start_str:
+                suffix_length = int(end_str)
+                start = max(0, file_size - suffix_length)
+                end = file_size - 1
+            elif not end_str:
+                start = int(start_str)
+                end = file_size - 1
+            else:
+                start = int(start_str)
+                end = min(int(end_str), file_size - 1)
+        except (ValueError, TypeError, OverflowError):
+            return "416"
         if start >= file_size or start > end:
             return "416"
         return start, end
