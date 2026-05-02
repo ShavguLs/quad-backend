@@ -178,6 +178,63 @@ class BookViewSet(viewsets.ModelViewSet):
         return Response(serializer.data)
 
 
+    @action(
+        detail=True,
+        methods=["get"],
+        url_path="read",
+        permission_classes=[IsAuthenticated],
+    )
+    def read(self, request, pk=None):
+        book = self.get_object()
+        
+        if not book.can_user_access(request.user):
+            return Response(
+                {"detail": "You do not have access to this book."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+            
+        if not book.pdf_file:
+            return Response(
+                {"detail": "PDF file not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        from django.http import FileResponse
+        response = FileResponse(book.pdf_file.open("rb"), content_type="application/pdf")
+        response["Content-Disposition"] = f'inline; filename="{book.slug}.pdf"'
+        return response
+
+    @action(
+        detail=True,
+        methods=["get"],
+        url_path="download",
+        permission_classes=[IsAuthenticated],
+    )
+    def download(self, request, pk=None):
+        book = self.get_object()
+        
+        if not book.can_user_access(request.user):
+            return Response(
+                {"detail": "You do not have access to this book."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+            
+        if book.access_type != Book.ACCESS_TYPE_SCIENTIFIC:
+            return Response(
+                {"detail": "This book is not available for download."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+            
+        if not book.pdf_file:
+            return Response(
+                {"detail": "PDF file not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        from django.http import FileResponse
+        response = FileResponse(book.pdf_file.open("rb"), content_type="application/pdf", as_attachment=True, filename=f"{book.slug}.pdf")
+        return response
+
 class PageNoteViewSet(viewsets.ViewSet):
     """ViewSet for creating, listing, and deleting page notes."""
 

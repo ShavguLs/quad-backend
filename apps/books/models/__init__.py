@@ -4,8 +4,12 @@ import re
 import unicodedata
 import uuid
 from django.conf import settings
+from django.core.files.storage import storages
 from django.core.validators import MinValueValidator
 from django.db import models
+
+def select_private_storage():
+    return storages["private"]
 
 # Import theme mixin
 from apps.books.models.book_theme import BookThemeMixin
@@ -72,6 +76,7 @@ class Book(BookThemeMixin, models.Model):
         upload_to="books/pdfs/%Y/%m/",
         blank=True,
         null=True,
+        storage=select_private_storage,
     )
     # Commerce fields
     price = models.DecimalField(
@@ -166,6 +171,9 @@ class Book(BookThemeMixin, models.Model):
         """Check if user can access this book's content (owner or purchaser)."""
         from django.utils import timezone
         from apps.orders.models import Order
+
+        if not user or not user.is_authenticated:
+            return False
 
         if self.owner == user:
             return True

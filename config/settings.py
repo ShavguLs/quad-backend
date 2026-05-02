@@ -98,6 +98,13 @@ if AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY:
         "staticfiles": {
             "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
         },
+        "private": {
+            "BACKEND": "storages.backends.s3boto3.S3Boto3Storage",
+            "OPTIONS": {
+                "location": "private",
+                "default_acl": "private",
+            },
+        },
     }
 else:
     # Local development: Use filesystem
@@ -107,6 +114,13 @@ else:
         },
         "staticfiles": {
             "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+        },
+        "private": {
+            "BACKEND": "django.core.files.storage.FileSystemStorage",
+            "OPTIONS": {
+                "location": BASE_DIR / 'private_media',
+                "base_url": None,
+            },
         },
     }
 

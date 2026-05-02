@@ -29,6 +29,8 @@ class BookSerializer(serializers.ModelSerializer):
     purchase_count = serializers.SerializerMethodField()
     access_expires_at = serializers.SerializerMethodField()
     access_is_expired = serializers.SerializerMethodField()
+    can_read = serializers.SerializerMethodField()
+    can_download = serializers.SerializerMethodField()
 
     class Meta:
         model = Book
@@ -60,6 +62,8 @@ class BookSerializer(serializers.ModelSerializer):
             "purchase_count",
             "access_expires_at",
             "access_is_expired",
+            "can_read",
+            "can_download",
         ]
         read_only_fields = [
             "id",
@@ -78,6 +82,8 @@ class BookSerializer(serializers.ModelSerializer):
             "purchase_count",
             "access_expires_at",
             "access_is_expired",
+            "can_read",
+            "can_download",
         ]
 
     def get_cover_image_url(self, obj):
@@ -126,6 +132,18 @@ class BookSerializer(serializers.ModelSerializer):
     def get_access_is_expired(self, obj):
         order = self._get_user_order(obj)
         return bool(order and order.expires_at and order.expires_at <= timezone.now())
+
+    def get_can_read(self, obj):
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        if not user or not user.is_authenticated:
+            return False
+        return obj.can_user_access(user)
+
+    def get_can_download(self, obj):
+        if obj.access_type != Book.ACCESS_TYPE_SCIENTIFIC:
+            return False
+        return self.get_can_read(obj)
 
     def create(self, validated_data):
         if validated_data.get("is_visible") is None:
