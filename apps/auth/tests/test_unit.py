@@ -269,6 +269,137 @@ class TestRegisterSerializer:
         assert user.handle == "createuser"
         assert user.check_password("SecurePass123!")
 
+    def test_handle_with_underscore_hyphen_digits(self):
+        """Test handle with underscores, hyphens, and digits is accepted."""
+        data = {
+            "email": "johndoe@example.com",
+            "password": "SecurePass123!",
+            "firstName": "John",
+            "lastName": "Doe",
+            "handle": "john_doe-123",
+        }
+        serializer = RegisterSerializer(data=data)
+        assert serializer.is_valid() is True
+        assert serializer.validated_data["handle"] == "john_doe-123"
+
+    def test_georgian_names_with_ascii_handle(self):
+        """Test Georgian first/last names with ASCII handle are accepted."""
+        data = {
+            "email": "georgian@example.com",
+            "password": "SecurePass123!",
+            "firstName": "გიორგი",
+            "lastName": "მამულია",
+            "handle": "giorgi_m",
+        }
+        serializer = RegisterSerializer(data=data)
+        assert serializer.is_valid() is True
+        assert serializer.validated_data["firstName"] == "გიორგი"
+        assert serializer.validated_data["lastName"] == "მამულია"
+
+    def test_script_in_first_name_rejected(self):
+        """Test firstName with script tags is rejected."""
+        data = {
+            "email": "xss@example.com",
+            "password": "SecurePass123!",
+            "firstName": "<script>alert(1)</script>",
+            "lastName": "User",
+            "handle": "xssuser",
+        }
+        serializer = RegisterSerializer(data=data)
+        assert serializer.is_valid() is False
+        assert "First name contains disallowed characters" in get_error_message(serializer.errors)
+
+    def test_script_in_last_name_rejected(self):
+        """Test lastName with HTML tags is rejected."""
+        data = {
+            "email": "xss2@example.com",
+            "password": "SecurePass123!",
+            "firstName": "User",
+            "lastName": '<img src=x onerror=alert(1)>',
+            "handle": "xssuser2",
+        }
+        serializer = RegisterSerializer(data=data)
+        assert serializer.is_valid() is False
+        assert "Last name contains disallowed characters" in get_error_message(serializer.errors)
+
+    def test_script_handle_rejected(self):
+        """Test handle with script tags is rejected."""
+        data = {
+            "email": "xss3@example.com",
+            "password": "SecurePass123!",
+            "firstName": "User",
+            "lastName": "Name",
+            "handle": "<script>",
+        }
+        serializer = RegisterSerializer(data=data)
+        assert serializer.is_valid() is False
+        assert "Handle must be 3-50 characters" in get_error_message(serializer.errors)
+
+    def test_georgian_handle_rejected(self):
+        """Test handle with non-ASCII characters is rejected."""
+        data = {
+            "email": "geohandle@example.com",
+            "password": "SecurePass123!",
+            "firstName": "Name",
+            "lastName": "User",
+            "handle": "გიორგი",
+        }
+        serializer = RegisterSerializer(data=data)
+        assert serializer.is_valid() is False
+        assert "Handle must be 3-50 characters" in get_error_message(serializer.errors)
+
+    def test_handle_too_short_rejected(self):
+        """Test handle shorter than 3 characters is rejected."""
+        data = {
+            "email": "short@example.com",
+            "password": "SecurePass123!",
+            "firstName": "Short",
+            "lastName": "Handle",
+            "handle": "ab",
+        }
+        serializer = RegisterSerializer(data=data)
+        assert serializer.is_valid() is False
+        assert "Handle must be 3-50 characters" in get_error_message(serializer.errors)
+
+    def test_handle_too_long_rejected(self):
+        """Test handle longer than 50 characters is rejected."""
+        data = {
+            "email": "long@example.com",
+            "password": "SecurePass123!",
+            "firstName": "Long",
+            "lastName": "Handle",
+            "handle": "a" * 51,
+        }
+        serializer = RegisterSerializer(data=data)
+        assert serializer.is_valid() is False
+        assert "Handle must be 3-50 characters" in get_error_message(serializer.errors)
+
+    def test_control_chars_in_first_name_rejected(self):
+        """Test firstName with control characters is rejected."""
+        data = {
+            "email": "ctrl@example.com",
+            "password": "SecurePass123!",
+            "firstName": "Name\x01Continue",
+            "lastName": "User",
+            "handle": "ctrluser",
+        }
+        serializer = RegisterSerializer(data=data)
+        assert serializer.is_valid() is False
+        assert "First name contains disallowed characters" in get_error_message(serializer.errors)
+
+    def test_angle_bracket_in_last_name_rejected(self):
+        """Test lastName with angle bracket is rejected."""
+        data = {
+            "email": "bracket@example.com",
+            "password": "SecurePass123!",
+            "firstName": "User",
+            "lastName": "Name>Other",
+            "handle": "bracketuser",
+        }
+        serializer = RegisterSerializer(data=data)
+        assert serializer.is_valid() is False
+        assert "Last name contains disallowed characters" in get_error_message(serializer.errors)
+
 
 class TestLoginSerializer:
     """Unit tests for LoginSerializer."""

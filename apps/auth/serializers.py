@@ -1,9 +1,14 @@
+import re
+
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 from rest_framework.exceptions import AuthenticationFailed
 
 from apps.users.models import User, normalize_handle
+
+_HANDLE_RE = re.compile(r'^[A-Za-z0-9_-]{3,50}$')
+_UNSAFE_DISPLAY_RE = re.compile(r'[<>\x00-\x1f\x7f]')
 
 
 class RegisterSerializer(serializers.Serializer):
@@ -36,6 +41,15 @@ class RegisterSerializer(serializers.Serializer):
         first_name = attrs["firstName"].strip()
         last_name = attrs["lastName"].strip()
         handle_normalized = normalize_handle(handle)
+
+        if not _HANDLE_RE.fullmatch(handle):
+            raise serializers.ValidationError({"error": "Handle must be 3-50 characters and contain only letters, numbers, underscores, and hyphens."})
+
+        if _UNSAFE_DISPLAY_RE.search(first_name):
+            raise serializers.ValidationError({"error": "First name contains disallowed characters."})
+
+        if _UNSAFE_DISPLAY_RE.search(last_name):
+            raise serializers.ValidationError({"error": "Last name contains disallowed characters."})
 
         if User.objects.filter(email__iexact=email).exists():
             raise serializers.ValidationError({"error": "Email is already in use."})

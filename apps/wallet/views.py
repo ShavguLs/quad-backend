@@ -480,7 +480,8 @@ class WalletDepositCallbackView(APIView):
                 logger.warning('Keepz callback decryption failed: %s', exc.message)
                 return Response({'acknowledged': False}, status=status.HTTP_200_OK)
         else:
-            payload = raw_payload
+            logger.warning('Keepz callback rejected: missing encrypted payload fields (encryptedData, encryptedKeys)')
+            return Response({'acknowledged': False}, status=status.HTTP_200_OK)
 
         order_id = _extract_order_id(payload)
         if not order_id:
