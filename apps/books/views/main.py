@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import io
 import logging
 import re
 
+import fitz
 from django.core.cache import cache
 from django.db import IntegrityError
 from django.db.models import F, Q
@@ -187,6 +189,87 @@ class BookViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(book)
         return Response(serializer.data)
 
+
+    @action(
+        detail=True,
+        methods=["get"],
+        url_path="preview",
+        permission_classes=[IsAuthenticatedOrReadOnly],
+    )
+    def preview(self, request, pk=None):
+        MAX_PREVIEW_PAGES = 10
+
+        book = get_object_or_404(
+            Book.objects.filter(status="published", is_visible=True),
+            pk=pk,
+        )
+
+        if not book.pdf_file:
+            return Response(
+                {"detail": "PDF file not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        pdf_file = self._open_pdf_file(book)
+        if pdf_file is None:
+            return Response(
+                {"detail": "PDF file not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        try:
+            source_doc = fitz.open(stream=pdf_file.read(), filetype="pdf")
+        except Exception:
+            return Response(
+                {"detail": "Could not open PDF."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+        finally:
+            pdf_file.close()
+
+        try:
+            page_count = min(len(source_doc), MAX_PREVIEW_PAGES)
+            preview_doc = fitz.open()
+
+            for page_idx in range(page_count):
+                src_page = source_doc[page_idx]
+                pix = src_page.get_pixmap(dpi=150)
+                rect = src_page.rect
+
+                new_page = preview_doc.new_page(
+                    width=rect.width, height=rect.height
+                )
+                new_page.insert_image(rect, pixmap=pix)
+
+                mid_y = rect.height / 2
+                mid_x = rect.width / 2
+                watermark_point = fitz.Point(mid_x, mid_y + rect.height * 0.35)
+                new_page.insert_text(
+                    watermark_point,
+                    "QUADUNI PREVIEW",
+                    fontsize=max(14, int(rect.width / 25)),
+                    color=(0.7, 0.7, 0.7),
+                    fontname="helv",
+                )
+
+            output_buffer = io.BytesIO()
+            preview_doc.save(output_buffer)
+            preview_doc.close()
+            output_buffer.seek(0)
+
+            response = HttpResponse(
+                output_buffer.read(),
+                content_type="application/pdf",
+            )
+            response["Content-Disposition"] = (
+                f'inline; filename="{book.slug or book.pk}-preview.pdf"'
+            )
+            response["Content-Length"] = str(len(response.content))
+            response["Cache-Control"] = "no-store"
+            response["X-Content-Type-Options"] = "nosniff"
+            return response
+        finally:
+            source_doc.close()
 
     @action(
         detail=True,
